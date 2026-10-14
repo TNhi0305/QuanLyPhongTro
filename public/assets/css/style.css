@@ -1,0 +1,280 @@
+/* ========================================================
+   HỆ THỐNG QUẢN LÝ PHÒNG TRỌ - CSS CHÍNH (RESPONSIVE & MODERN)
+   ======================================================== */
+
+:root {
+    --primary-color: #2563eb;
+    --primary-hover: #1d4ed8;
+    --secondary-color: #64748b;
+    --success-color: #10b981;
+    --warning-color: #f59e0b;
+    --danger-color: #ef4444;
+    --info-color: #06b6d4;
+    --dark-bg: #0f172a;
+    --sidebar-bg: #1e293b;
+    --sidebar-hover: #334155;
+    --sidebar-active: #2563eb;
+    --sidebar-text: #94a3b8;
+    --sidebar-text-active: #ffffff;
+    --light-bg: #f8fafc;
+    --card-border: #e2e8f0;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+}
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--light-bg);
+    color: var(--text-main);
+    overflow-x: hidden;
+}
+
+/* Sidebar Styles */
+.admin-sidebar {
+    width: 260px;
+    min-height: 100vh;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-text);
+    transition: all 0.3s ease;
+    z-index: 1040;
+}
+
+.admin-sidebar .sidebar-brand {
+    padding: 1.25rem 1.5rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    text-decoration: none;
+}
+
+.admin-sidebar .nav-link {
+    color: var(--sidebar-text);
+    padding: 0.75rem 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.925rem;
+    font-weight: 500;
+    border-radius: 0.5rem;
+    margin: 0.2rem 0.75rem;
+    transition: all 0.2s ease;
+}
+
+.admin-sidebar .nav-link i {
+    font-size: 1.15rem;
+    width: 24px;
+    text-align: center;
+}
+
+.admin-sidebar .nav-link:hover {
+    color: #fff;
+    background: var(--sidebar-hover);
+}
+
+.admin-sidebar .nav-link.active {
+    color: var(--sidebar-text-active);
+    background: var(--sidebar-active);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+}
+
+.sidebar-heading {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #64748b;
+    padding: 1rem 1.5rem 0.25rem;
+    font-weight: 700;
+}
+
+/* Top Navbar */
+.top-navbar {
+    background: #fff;
+    border-bottom: 1px solid var(--card-border);
+    height: 64px;
+    position: sticky;
+    top: 0;
+    z-index: 1020;
+}
+
+/* Content Area */
+.main-wrapper {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.content-body {
+    flex: 1;
+    padding: 1.5rem;
+}
+
+/* Cards & Stats */
+.stat-card {
+    border: none;
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    overflow: hidden;
+}
+
+.stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+}
+
+.card {
+    border: 1px solid var(--card-border);
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.card-header {
+    background: #fff;
+    border-bottom: 1px solid var(--card-border);
+    padding: 1rem 1.25rem;
+    font-weight: 600;
+}
+
+/* Badges */
+.badge-status {
+    padding: 0.4em 0.75em;
+    font-weight: 500;
+    border-radius: 0.375rem;
+    font-size: 0.8rem;
+}
+
+/* Tables */
+.table {
+    margin-bottom: 0;
+}
+
+.table th {
+    background: #f8fafc;
+    color: #475569;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.table td {
+    vertical-align: middle;
+    font-size: 0.925rem;
+}
+
+/* Buttons */
+.btn {
+    border-radius: 0.5rem;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.btn-sm {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.825rem;
+}
+
+/* Tenant Portal UI */
+.tenant-nav {
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.bottom-mobile-nav {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #ffffff;
+    border-top: 1px solid var(--card-border);
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+    z-index: 1050;
+    padding: 0.5rem 0;
+}
+
+.bottom-mobile-nav .nav-item {
+    text-align: center;
+    flex: 1;
+}
+
+.bottom-mobile-nav .nav-link {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    padding: 0.25rem 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.bottom-mobile-nav .nav-link i {
+    font-size: 1.25rem;
+    margin-bottom: 2px;
+}
+
+.bottom-mobile-nav .nav-link.active {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+/* Print View Styles */
+@media print {
+    .no-print, .admin-sidebar, .top-navbar, .bottom-mobile-nav, .btn, footer {
+        display: none !important;
+    }
+    body {
+        background: #fff !important;
+        color: #000 !important;
+    }
+    .print-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-shadow: none !important;
+        border: none !important;
+    }
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 991.98px) {
+    .admin-sidebar {
+        position: fixed;
+        left: -260px;
+        top: 0;
+        bottom: 0;
+    }
+    .admin-sidebar.show {
+        left: 0;
+    }
+    .main-wrapper {
+        margin-left: 0 !important;
+    }
+    .content-body {
+        padding: 1rem;
+    }
+    .bottom-mobile-nav {
+        display: flex;
+    }
+    .tenant-content {
+        padding-bottom: 70px;
+    }
+}
