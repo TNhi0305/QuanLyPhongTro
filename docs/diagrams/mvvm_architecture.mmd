@@ -1,0 +1,56 @@
+graph TD
+    subgraph ViewLayer["🎨 VIEW (Presentation Layer)"]
+        V1["RoomsView.tsx<br/>- FlatList phòng<br/>- Bộ lọc trạng thái<br/>- Form thêm phòng"]
+        V2["InvoicesView.tsx<br/>- FlatList hóa đơn<br/>- QR VietQR<br/>- Form thu tiền"]
+        V3["NotificationsView.tsx<br/>- Danh sách thông báo<br/>- Badge chưa đọc<br/>- Cài đặt tùy chọn"]
+    end
+
+    subgraph ViewModelLayer["🧠 VIEWMODEL (Logic & State Management)"]
+        VM1["useRoomsViewModel / RoomsViewModel<br/>- rooms, filteredRooms, stats<br/>- loadRooms(), addRoom(), deleteRoom()"]
+        VM2["useInvoicesViewModel / InvoicesViewModel<br/>- invoices, summary, statusFilter<br/>- loadInvoices(), payInvoice(), createInvoice()"]
+        VM3["useNotificationsViewModel / NotificationsViewModel<br/>- notifications, unreadCount, preferences<br/>- markAsRead(), updatePreference()"]
+    end
+
+    subgraph RepositoryLayer["🔌 REPOSITORY INTERFACE (Hợp đồng dữ liệu)"]
+        R1["IRoomRepository"]
+        R2["IInvoiceRepository"]
+        R3["INotificationRepository"]
+    end
+
+    subgraph ModelLayer["📦 MODEL & IMPLEMENTATION (Nguồn dữ liệu)"]
+        subgraph RealAPI["Triển khai REST API Thật"]
+            A1["ApiRoomRepository"]
+            A2["ApiInvoiceRepository"]
+            A3["ApiNotificationRepository"]
+        end
+
+        subgraph MockData["Triển khai Giả lập (Unit Test / Offline)"]
+            M1["MockRoomRepository"]
+            M2["MockInvoiceRepository"]
+            M3["MockNotificationRepository"]
+        end
+
+        subgraph DomainEntities["Domain Types / Models"]
+            T1["Room, Invoice, NotificationItem, User"]
+        end
+    end
+
+    V1 -->|Gọi Action & Lắng nghe State| VM1
+    V2 -->|Gọi Action & Lắng nghe State| VM2
+    V3 -->|Gọi Action & Lắng nghe State| VM3
+
+    VM1 -->|Dependency Injection| R1
+    VM2 -->|Dependency Injection| R2
+    VM3 -->|Dependency Injection| R3
+
+    R1 -.->|implements| A1
+    R1 -.->|implements (Jest Test)| M1
+
+    R2 -.->|implements| A2
+    R2 -.->|implements (Jest Test)| M2
+
+    R3 -.->|implements| A3
+    R3 -.->|implements (Jest Test)| M3
+
+    A1 -->|HTTP client| DomainEntities
+    M1 --> DomainEntities

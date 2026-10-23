@@ -151,11 +151,51 @@ $router->get('/tenant/maintenance/create', [TenantPortalController::class, 'crea
 $router->post('/tenant/maintenance', [TenantPortalController::class, 'storeMaintenance']);
 $router->get('/tenant/notifications', [TenantPortalController::class, 'notifications']);
 
-// API JSON cho ứng dụng di động Expo Go
+// API JSON cho ứng dụng di động React Native Expo
 $router->get('/api/health', [MobileApiController::class, 'health']);
 $router->get('/api/demo-tenants', [MobileApiController::class, 'demoTenants']);
 $router->post('/api/login', [MobileApiController::class, 'login']);
+$router->post('/api/register', [MobileApiController::class, 'register']);
 $router->get('/api/dashboard', [MobileApiController::class, 'dashboard']);
+
+// Quản lý phòng trọ (CRUD)
+$router->get('/api/rooms', [MobileApiController::class, 'rooms']);
+$router->post('/api/rooms', [MobileApiController::class, 'createRoom']);
+$router->put('/api/rooms/{id}', [MobileApiController::class, 'updateRoom']);
+$router->post('/api/rooms/update/{id}', [MobileApiController::class, 'updateRoom']);
+$router->delete('/api/rooms/{id}', [MobileApiController::class, 'deleteRoom']);
+$router->post('/api/rooms/delete/{id}', [MobileApiController::class, 'deleteRoom']);
+
+// Quản lý khách thuê
+$router->get('/api/tenants', [MobileApiController::class, 'tenants']);
+
+// Quản lý hóa đơn & thanh toán
 $router->get('/api/invoices', [MobileApiController::class, 'invoices']);
+$router->post('/api/invoices', [MobileApiController::class, 'createInvoice']);
+$router->post('/api/payments', [MobileApiController::class, 'recordPayment']);
+
+// Quản lý sự cố & bảo trì
 $router->get('/api/maintenance', [MobileApiController::class, 'maintenance']);
 $router->post('/api/maintenance', [MobileApiController::class, 'maintenance']);
+$router->post('/api/maintenance/update', [MobileApiController::class, 'updateMaintenanceStatus']);
+$router->post('/api/maintenance/{id}/status', [MobileApiController::class, 'updateMaintenanceStatus']);
+
+// Quản lý Push Token thiết bị
+$router->post('/api/push-token', [MobileApiController::class, 'savePushToken']);
+$router->post('/api/push-tokens', [MobileApiController::class, 'savePushToken']);
+$router->post('/api/push-token/remove', [MobileApiController::class, 'removePushToken']);
+$router->delete('/api/push-token', [MobileApiController::class, 'removePushToken']);
+$router->delete('/api/push-tokens', [MobileApiController::class, 'removePushToken']);
+
+// Quản lý thông báo & Tùy chọn
+$router->get('/api/notifications', [MobileApiController::class, 'notifications']);
+$router->get('/api/notifications/unread-count', [MobileApiController::class, 'unreadCount']);
+$router->post('/api/notifications/read/{id}', [MobileApiController::class, 'markNotificationRead']);
+$router->patch('/api/notifications/{id}/read', [MobileApiController::class, 'markNotificationRead']);
+$router->post('/api/notifications/read-all', [MobileApiController::class, 'markAllNotificationsRead']);
+$router->patch('/api/notifications/read-all', [MobileApiController::class, 'markAllNotificationsRead']);
+$router->get('/api/notifications/preferences', [MobileApiController::class, 'getNotificationPreferences']);
+$router->post('/api/notifications/preferences', [MobileApiController::class, 'saveNotificationPreferences']);
+$router->post('/api/reminders/run', [MobileApiController::class, 'runReminders']);
+
+

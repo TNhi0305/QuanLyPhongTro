@@ -23,6 +23,30 @@ class Router
     }
 
     /**
+     * Đăng ký route PUT
+     */
+    public function put(string $path, array|string|callable $handler): void
+    {
+        $this->addRoute('PUT', $path, $handler);
+    }
+
+    /**
+     * Đăng ký route PATCH
+     */
+    public function patch(string $path, array|string|callable $handler): void
+    {
+        $this->addRoute('PATCH', $path, $handler);
+    }
+
+    /**
+     * Đăng ký route DELETE
+     */
+    public function delete(string $path, array|string|callable $handler): void
+    {
+        $this->addRoute('DELETE', $path, $handler);
+    }
+
+    /**
      * Thêm route vào danh sách
      */
     private function addRoute(string $method, string $path, array|string|callable $handler): void
@@ -65,6 +89,12 @@ class Router
 
         if ($baseDir !== '/' && strpos($uri, $baseDir) === 0) {
             $uri = substr($uri, strlen($baseDir));
+        } else {
+            $parentBaseDir = dirname($baseDir);
+            $parentBaseDir = str_replace('\\', '/', $parentBaseDir);
+            if ($parentBaseDir !== '/' && $parentBaseDir !== '.' && strpos($uri, $parentBaseDir) === 0) {
+                $uri = substr($uri, strlen($parentBaseDir));
+            }
         }
 
         $clean = '/' . trim($uri, '/');
@@ -84,10 +114,18 @@ class Router
         $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
         if ($method === 'OPTIONS') {
             header('Access-Control-Allow-Origin: *');
-            header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
-            header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+            header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override');
+            header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
             http_response_code(200);
             exit;
+        }
+
+        if ($method === 'POST') {
+            if (!empty($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'])) {
+                $method = strtoupper($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE']);
+            } elseif (!empty($_POST['_method'])) {
+                $method = strtoupper($_POST['_method']);
+            }
         }
 
         $currentRoute = $this->getCurrentRoute();

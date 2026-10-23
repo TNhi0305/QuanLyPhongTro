@@ -270,11 +270,19 @@ CREATE TABLE `notifications` (
   `content` TEXT NOT NULL,
   `type` ENUM('general', 'maintenance', 'payment', 'system') NOT NULL DEFAULT 'general',
   `target_tenant_id` INT DEFAULT NULL COMMENT 'NULL = gửi toàn bộ người thuê',
+  `target_user_id` INT DEFAULT NULL COMMENT 'NULL = theo target_tenant_id hoặc tất cả',
   `created_by` INT DEFAULT NULL,
+  `is_read` TINYINT(1) NOT NULL DEFAULT 0,
+  `reference_type` VARCHAR(50) DEFAULT NULL,
+  `reference_id` INT DEFAULT NULL,
+  `data_payload` TEXT DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT `fk_notif_tenant` FOREIGN KEY (`target_tenant_id`) REFERENCES `tenants` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  CONSTRAINT `fk_notif_user` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+  CONSTRAINT `fk_notif_user` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  INDEX `idx_notif_target_user` (`target_user_id`),
+  INDEX `idx_notif_read` (`is_read`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 -- --------------------------------------------------------
 -- 14. Bảng expenses (Quản lý chi phí vận hành nhà trọ)
@@ -324,7 +332,40 @@ CREATE TABLE `activity_logs` (
   INDEX `idx_log_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- --------------------------------------------------------
+-- 17. Bảng push_tokens (Token Push Notification thiết bị di động)
+-- --------------------------------------------------------
+DROP TABLE IF EXISTS `push_tokens`;
+CREATE TABLE `push_tokens` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `token` VARCHAR(255) NOT NULL UNIQUE,
+  `device_type` VARCHAR(50) DEFAULT 'mobile',
+  `device_id` VARCHAR(100) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX `idx_push_user` (`user_id`),
+  CONSTRAINT `fk_push_tokens_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- 18. Bảng payment_reminder_logs (Lịch sử nhắc hạn đóng tiền, chống gửi trùng)
+-- --------------------------------------------------------
+DROP TABLE IF EXISTS `payment_reminder_logs`;
+CREATE TABLE `payment_reminder_logs` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `invoice_id` INT NOT NULL,
+  `reminder_type` VARCHAR(50) NOT NULL DEFAULT 'due_date',
+  `reminder_date` DATE NOT NULL,
+  `sent_to_user_id` INT NOT NULL,
+  `sent_status` VARCHAR(50) NOT NULL DEFAULT 'sent',
+  `sent_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_invoice_reminder_date` (`invoice_id`, `reminder_type`, `reminder_date`),
+  CONSTRAINT `fk_reminder_invoice` FOREIGN KEY (`invoice_id`) REFERENCES `invoices` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
+
 
 -- ========================================================
 -- DỮ LIỆU MẪU ĐỂ KIỂM THỬ (SAMPLE DATA)

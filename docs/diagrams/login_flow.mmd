@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    actor User as 👤 Người dùng
+    participant App as 📱 Mobile App (HomeScreen / useAuthViewModel)
+    participant Storage as 💾 AsyncStorage / SecureStore
+    participant Backend as 🖥️ PHP REST API
+    participant DB as 🗄️ MySQL Database
+
+    %% Luồng Khởi động & Khôi phục phiên
+    rect rgb(240, 248, 255)
+    Note over User, DB: A. Khởi động ứng dụng & Khôi phục phiên tự động
+    User->>App: Mở ứng dụng
+    App->>Storage: Lấy @qlpt_token & @qlpt_user
+    alt Không có Token đã lưu
+        Storage-->>App: null
+        App->>User: Hiển thị màn hình Đăng nhập / Đăng ký
+    else Có Token đã lưu
+        Storage-->>App: token, userObj
+        App->>Backend: GET /api/dashboard (Header: Bearer token)
+        alt Token hợp lệ (200 OK)
+            Backend-->>App: { success: true, user: {...}, stats: {...} }
+            App->>User: Tự động khôi phục phiên & mở màn hình chính (theo Role)
+        else Token hết hạn hoặc không hợp lệ (401 Unauthorized)
+            Backend-->>App: { success: false, message: "Phiên đăng nhập hết hạn" }
+            App->>Storage: Xóa @qlpt_token & @qlpt_user
+            App->>User: Yêu cầu đăng nhập lại
+        end
+    end
+    end
+
+    %% Luồng Đăng nhập Mới
+    rect rgb(255, 250, 240)
+    Note over User, DB: B. Luồng Đăng nhập thủ công qua REST API
+    User->>App: Nhập SĐT/Tên đăng nhập & Mật khẩu
+    App->>Backend: POST /api/login { username, password }
+    Backend->>DB: SELECT * FROM users WHERE (phone=? OR username=?) AND status=1
+    Backend->>Backend: Kiểm tra password_verify() hoặc Hash khớp
+    alt Đăng nhập thành công
+        Backend->>Backend: Tạo Token HMAC-SHA256 (user_id, role, expiry)
+        Backend-->>App: { success: true, token: "...", user: {...} }
+        App->>Storage: Lưu @qlpt_token & @qlpt_user
+        App->>Backend: POST /api/push-token (Đăng ký nhận thông báo)
+        App->>User: Điều hướng vào Trang chủ theo vai trò (Admin / Khách thuê)
+    else Sai thông tin đăng nhập
+        Backend-->>App: { success: false, message: "Tài khoản hoặc mật khẩu không đúng" }
+        App->>User: Hiển thị lỗi xác thực
+    end
+    end

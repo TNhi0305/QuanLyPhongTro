@@ -55,6 +55,29 @@ class PaymentController extends Controller
             ]);
 
             log_activity('Thu tiền phòng', 'payments', $paymentId, "Thu tiền hóa đơn ID #{$invoiceId}: " . format_currency($amount));
+
+            // Phát sinh thông báo Push Notification tới người thuê (Sự kiện nghiệp vụ 2)
+            $inv = $this->invoiceModel->find($invoiceId);
+            if ($inv && !empty($inv['tenant_id'])) {
+                $statusText = ($inv['status'] === 'paid') ? 'Đã thanh toán đủ.' : 'Thanh toán một phần.';
+                \App\Helpers\PushNotification::createAndSend(
+                    'Xác nhận thanh toán tiền phòng',
+                    "Chủ trọ đã xác nhận thanh toán " . format_currency($amount) . " cho hóa đơn " . ($inv['invoice_code'] ?? "#{$invoiceId}") . ". Trạng thái: {$statusText}",
+                    'payment',
+                    (int)$inv['tenant_id'],
+                    null,
+                    'invoice',
+                    $invoiceId,
+                    [
+                        'invoice_id' => $invoiceId,
+                        'paid_amount' => $amount,
+                        'status' => $inv['status'] ?? 'paid',
+                        'type' => 'payment_received'
+                    ],
+                    $user['id'] ?? null
+                );
+            }
+
             set_flash('success', "Ghi nhận thanh toán " . format_currency($amount) . " thành công!");
             $this->redirect('/invoices/show/' . $invoiceId);
         } catch (Exception $e) {

@@ -253,10 +253,49 @@ class TenantPortalController extends Controller
                 'status'      => 'pending'
             ]);
 
+            $createdReq = $this->maintenanceModel->findWithDetails($reqId);
+            $roomName = $createdReq['room_number'] ?? $activeContract['room_code'] ?? 'Phòng';
+
+            // Gửi push notification cho chủ trọ/quản trị viên
+            \App\Helpers\PushNotification::createAndSend(
+                "Sự cố mới cần tiếp nhận ({$roomName})",
+                "Khách thuê {$tenant['fullname']} vừa báo sự cố: {$title}",
+                'maintenance',
+                null,
+                null,
+                'maintenance',
+                $reqId,
+                [
+                    'request_id'   => $reqId,
+                    'request_code' => $createdReq['request_code'] ?? '',
+                    'room_name'    => $roomName,
+                    'tenant_name'  => $tenant['fullname'],
+                    'priority'     => $priority,
+                    'type'         => 'maintenance_created'
+                ],
+                $tenant['user_id'] ?? null
+            );
+
+            // Phát sự kiện realtime tới phòng admin
+            \App\Helpers\RealtimeEmitter::emit('incident:created', [
+                'id'           => $reqId,
+                'request_code' => $createdReq['request_code'] ?? '',
+                'room_id'      => $activeContract['room_id'],
+                'room_name'    => $roomName,
+                'tenant_id'    => $tenant['id'],
+                'tenant_name'  => $tenant['fullname'],
+                'title'        => $title,
+                'description'  => $description,
+                'priority'     => $priority,
+                'status'       => 'pending',
+                'created_at'   => date('Y-m-d H:i:s')
+            ], 'admin');
+
             log_activity('Gửi yêu cầu sửa chữa', 'maintenance_requests', $reqId, "Người thuê {$tenant['fullname']} gửi yêu cầu {$title}");
             set_flash('success', 'Yêu cầu sửa chữa đã được gửi tới chủ trọ thành công! Ban quản lý sẽ liên hệ xử lý sớm nhất.');
             $this->redirect('/tenant/maintenance');
         } catch (Exception $e) {
+
             set_flash('danger', 'Lỗi: ' . $e->getMessage());
             $this->redirect('/tenant/maintenance/create');
         }

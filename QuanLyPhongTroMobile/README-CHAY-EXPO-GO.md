@@ -5,6 +5,7 @@
 ---
 
 ## 1. Thông số kết nối hiện tại trên máy tính
+
 - **IPv4 máy tính:** `192.168.100.36`
 - **Cổng Apache WAMP:** `8080` (URL: `http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route=`)
 - **Kiểm tra API trên trình duyệt:** `http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route=api/health`
@@ -13,10 +14,11 @@
 ---
 
 ## 2. Tài khoản khách thuê sẵn sàng để đăng nhập
+
 Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **Tên đăng nhập**:
 
 | Khách thuê | Số điện thoại | Tên đăng nhập | Phòng thuê | Mật khẩu |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **Nguyễn Văn An** | `0912345678` | `nguyenvanan` | Phòng 101 (Tầng 1) | `NhaTro@2026` |
 | **Trần Thị Bình** | `0987654321` | `tranthib` | Phòng 102 (Tầng 1) | `NhaTro@2026` |
 
@@ -27,30 +29,37 @@ Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **T
 ## 3. Cách chạy ứng dụng trên điện thoại thật
 
 ### A. Dành cho điện thoại Android
+
 1. Mở **Google Play Store (CH Play)** trên Android, tìm và cài đặt ứng dụng **Expo Go**.
 2. Kết nối Android vào **chung mạng Wi-Fi** với máy tính (hoặc bật Hotspot).
 3. Mở terminal tại `QuanLyPhongTroMobile` và chạy:
+
    ```powershell
    cd C:\wamp64\www\QuanLyPhongTro\QuanLyPhongTroMobile
    npx expo start --lan
    ```
+
 4. Mở app **Expo Go** trên Android -> Bấm **"Scan QR code"** ngay trong app -> Quét mã QR hiển thị ở terminal máy tính.
    - Hoặc chọn mục nhập link: `exp://192.168.100.36:8081`
 
 ### B. Dành cho điện thoại iPhone (iOS)
+
 1. Mở **App Store** trên iPhone, tìm và cài đặt ứng dụng **Expo Go**.
 2. Kết nối iPhone vào **chung mạng Wi-Fi** với máy tính.
 3. Mở ứng dụng **Camera (Máy ảnh)** mặc định của iPhone -> Hướng vào mã QR ở terminal -> Bấm vào thông báo vàng *"Open in Expo Go"*.
    - Hoặc mở app **Expo Go** -> Chọn **Enter URL manually** -> Nhập: `exp://192.168.100.36:8081`
 
 ### C. Dành cho máy ảo Android Studio (Emulator)
+
 - Mở máy ảo Android Studio.
 - Trong ứng dụng, bấm nút **"Đổi IP"** -> Chọn nút mẫu **"Giả lập Android (10.0.2.2:8080)"** -> Bấm **"Lưu & Áp dụng"**.
 
 ---
 
 ## 4. Xử lý khi đổi mạng Wi-Fi hoặc IP máy tính thay đổi
+
 Ứng dụng trên điện thoại đã tích hợp thanh cấu hình máy chủ thông minh:
+
 1. Nhìn lên thanh thông báo trên cùng của ứng dụng:
    - 🟢 **Màu xanh:** Đã kết nối thành công với máy tính.
    - 🔴 **Màu đỏ:** Chưa kết nối được.
@@ -60,6 +69,7 @@ Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **T
 ---
 
 ## 5. Danh sách các tính năng dành cho khách thuê
+
 1. **Tổng quan (Home):**
    - Xem thông tin phòng ở: Mã phòng, diện tích, địa chỉ, giá thuê, hợp đồng và thời hạn.
    - Xem các hóa đơn chưa thanh toán và số tiền còn nợ.
@@ -79,20 +89,25 @@ Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **T
 ---
 
 ## 6. Xử lý sự cố thường gặp
-- **Lỗi `Network request failed`:** 
+
+- **Lỗi `Network request failed`:**
   1. Kiểm tra điện thoại và máy tính đã cùng một mạng Wi-Fi chưa.
   2. Kiểm tra WAMP Apache đang chạy (biểu tượng WAMP xanh lá, port 8080).
   3. Mở trình duyệt trên điện thoại (Chrome trên Android hoặc Safari trên iPhone) gõ thử: `http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route=api/health`. Nếu thấy JSON `{"success": true}` là kết nối bình thường.
 - **Router bật tính năng Wi-Fi Client Isolation (chặn các máy trong LAN thấy nhau):**
   - Chạy lệnh tunnel của Expo:
+
     ```powershell
     npx expo start --tunnel
     ```
+
   - Quét mã QR tunnel trên điện thoại.
 - **Nếu cắm cáp USB cho Android:**
   - Có thể chuyển tiếp cổng qua lệnh ADB:
+
     ```bash
     adb reverse tcp:8080 tcp:8080
     adb reverse tcp:8081 tcp:8081
     ```
+
   - Khi đó trên Android có thể trỏ thẳng vào `http://localhost:8080/QuanLyPhongTro/public/index.php?route=` cực kỳ ổn định.

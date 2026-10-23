@@ -1,0 +1,47 @@
+graph TD
+    subgraph Client["📱 Lớp Client (Mobile & Web)"]
+        RN["React Native / Expo App (iOS & Android)"]
+        WebAdmin["Web Browser (Admin Portal)"]
+    end
+
+    subgraph MVVMLayer["🏗️ Kiến trúc MVVM (Mobile)"]
+        Views["Views (UI Presentation)<br/>RoomsView, InvoicesView, NotificationsView"]
+        ViewModels["ViewModels (Business Logic & State)<br/>useRoomsViewModel, useInvoicesViewModel, useNotificationsViewModel"]
+        Repos["Repository Layer<br/>IRoomRepo, IInvoiceRepo, INotificationRepo"]
+        Views -->|Observes & Dispatches| ViewModels
+        ViewModels -->|Calls Interface| Repos
+    end
+
+    subgraph Services["🌐 Dịch vụ Bên ngoài & Realtime"]
+        ExpoPush["Expo Push Notification Service (exp.host)"]
+        SocketIO["Node.js Realtime Socket.IO Server (Port 3001)"]
+    end
+
+    subgraph Backend["💻 Backend Server (WAMP Apache 8080)"]
+        PHP_API["PHP REST API Router & Controllers<br/>(MobileApiController)"]
+        PHP_Web["PHP MVC Web Controllers<br/>(InvoiceController, PaymentController, etc.)"]
+        PushHelper["PushNotification Helper (cURL / HTTP)"]
+        RealtimeHelper["RealtimeEmitter Helper"]
+    end
+
+    subgraph Database["🗄️ MySQL Database (Port 3306)"]
+        DB[(MySQL: users, rooms, tenants, contracts,<br/>invoices, payments, notifications, push_tokens,<br/>payment_reminder_logs, notification_preferences)]
+    end
+
+    RN --> Views
+    Repos -->|HTTP REST JSON| PHP_API
+    WebAdmin -->|HTTP GET/POST| PHP_Web
+
+    RN -.->|WebSocket| SocketIO
+    RN -.->|Token Registration| ExpoPush
+
+    PHP_API --> DB
+    PHP_Web --> DB
+
+    PHP_API -->|cURL Push Payload| ExpoPush
+    PHP_Web -->|cURL Push Payload| ExpoPush
+
+    PHP_API -->|Local Emit| SocketIO
+    PHP_Web -->|Local Emit| SocketIO
+
+    ExpoPush ==>|Remote APNs / FCM Push| RN

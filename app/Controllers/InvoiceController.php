@@ -197,9 +197,30 @@ class InvoiceController extends Controller
         try {
             $invId = $this->invoiceModel->createInvoiceWithDetails($invoiceData, $details);
             log_activity('Lập hóa đơn', 'invoices', $invId, "Lập hóa đơn tiền phòng kỳ {$billingMonth}");
+
+            // Gửi push notification và tạo lịch sử thông báo cho người thuê
+            \App\Helpers\PushNotification::createAndSend(
+                'Hóa đơn tháng mới',
+                "Bạn có hóa đơn tiền phòng mới (Kỳ {$billingMonth}) với tổng số tiền " . format_currency($totalAmount) . ". Vui lòng kiểm tra và thanh toán trước ngày {$dueDate}.",
+                'payment',
+                (int)$contract['tenant_id'],
+                null,
+                'invoice',
+                (int)$invId,
+                [
+                    'invoice_id'    => (int)$invId,
+                    'billing_month' => $billingMonth,
+                    'total_amount'  => $totalAmount,
+                    'due_date'      => $dueDate,
+                    'type'          => 'new_invoice'
+                ],
+                $_SESSION['user_id'] ?? null
+            );
+
             set_flash('success', "Lập hóa đơn thành công!");
             $this->redirect('/invoices/show/' . $invId);
         } catch (Exception $e) {
+
             set_flash('danger', 'Lỗi: ' . $e->getMessage());
             $this->redirect('/invoices/create');
         }

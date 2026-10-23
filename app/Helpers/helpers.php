@@ -48,7 +48,7 @@ function asset(string $path): string
 /**
  * Tạo URL file upload
  */
-function upload_url(string $path = null): string
+function upload_url(?string $path = null): string
 {
     if (empty($path)) {
         return asset('images/no-image.png');

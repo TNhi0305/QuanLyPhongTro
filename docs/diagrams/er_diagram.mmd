@@ -1,0 +1,112 @@
+erDiagram
+    users ||--o{ tenants : "liên kết 1-1"
+    users ||--o{ push_tokens : "sở hữu thiết bị"
+    users ||--o{ notification_preferences : "tùy chọn"
+    users ||--o{ notifications : "nhận thông báo"
+
+    rental_areas ||--o{ rooms : "chứa"
+    rooms ||--o{ contracts : "cho thuê"
+    tenants ||--o{ contracts : "ký hợp đồng"
+
+    contracts ||--o{ invoices : "phát sinh kỳ thu"
+    invoices ||--o{ invoice_details : "chi tiết dòng"
+    invoices ||--o{ payments : "được thanh toán"
+    invoices ||--o{ payment_reminder_logs : "log nhắc nợ"
+
+    rooms ||--o{ maintenance_requests : "phát sinh sự cố"
+    tenants ||--o{ maintenance_requests : "báo cáo sự cố"
+
+    users {
+        int id PK
+        string username
+        string password
+        string fullname
+        string phone
+        string role "admin/tenant"
+        tinyint status "1:active"
+    }
+
+    push_tokens {
+        int id PK
+        int user_id FK
+        string token UK
+        string device_type
+        string device_id
+        tinyint is_active
+        datetime updated_at
+    }
+
+    notifications {
+        int id PK
+        string title
+        text content
+        string type "payment/maintenance/general"
+        int target_tenant_id FK
+        int target_user_id FK
+        tinyint is_read "0:unread, 1:read"
+        string reference_type "invoice/maintenance"
+        int reference_id
+        text data_payload
+        datetime created_at
+    }
+
+    notification_preferences {
+        int id PK
+        int user_id FK
+        string category "invoice/payment/maintenance/reminder"
+        tinyint is_enabled "1:on, 0:off"
+        datetime updated_at
+    }
+
+    payment_reminder_logs {
+        int id PK
+        int invoice_id FK
+        string reminder_type
+        date reminder_date
+        int sent_to_user_id
+        string sent_status
+        datetime sent_at
+    }
+
+    rooms {
+        int id PK
+        int area_id FK
+        string room_code
+        string room_number
+        decimal area_size
+        decimal price
+        decimal deposit
+        string status "empty/rented/maintenance"
+    }
+
+    tenants {
+        int id PK
+        int user_id FK
+        string fullname
+        string phone
+        string id_card
+    }
+
+    invoices {
+        int id PK
+        string invoice_code UK
+        int contract_id FK
+        int room_id FK
+        int tenant_id FK
+        string billing_month
+        decimal room_price
+        decimal total_amount
+        decimal paid_amount
+        decimal remaining_amount
+        date due_date
+        string status "unpaid/partially_paid/paid/overdue"
+    }
+
+    payments {
+        int id PK
+        string payment_code UK
+        int invoice_id FK
+        decimal amount
+        string payment_method "cash/bank_transfer"
+        datetime payment_date
+    }

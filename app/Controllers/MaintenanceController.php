@@ -68,6 +68,57 @@ class MaintenanceController extends Controller
             'cost'        => $cost
         ]);
 
+        // Gửi push notification và phát sự kiện realtime
+        $statusLabels = [
+            'pending'     => 'Chờ xử lý',
+            'in_progress' => 'Đang xử lý',
+            'completed'   => 'Đã hoàn thành',
+            'rejected'    => 'Từ chối'
+        ];
+        $statusText = $statusLabels[$status] ?? $status;
+        $title = "Cập nhật sự cố: {$request['title']}";
+        $content = "Sự cố {$request['request_code']} của bạn đã được chuyển sang trạng thái: {$statusText}." . ($adminNotes ? " Ghi chú: {$adminNotes}" : "");
+
+        \App\Helpers\PushNotification::createAndSend(
+            $title,
+            $content,
+            'maintenance',
+            (int)$request['tenant_id'],
+            null,
+            'maintenance',
+            $id,
+            [
+                'request_id'   => $id,
+                'request_code' => $request['request_code'],
+                'status'       => $status,
+                'status_text'  => $statusText,
+                'admin_notes'  => $adminNotes,
+                'type'         => 'maintenance_update'
+            ],
+            $_SESSION['user_id'] ?? null
+        );
+
+        $pdo = \App\Helpers\Database::getConnection();
+        $stmtT = $pdo->prepare("SELECT user_id FROM tenants WHERE id = ?");
+        $stmtT->execute([$request['tenant_id']]);
+        $tenantUserId = $stmtT->fetchColumn();
+
+        $realtimePayload = [
+            'id'           => $id,
+            'request_code' => $request['request_code'],
+            'title'        => $request['title'],
+            'status'       => $status,
+            'status_text'  => $statusText,
+            'admin_notes'  => $adminNotes,
+            'cost'         => $cost,
+            'updated_at'   => date('Y-m-d H:i:s')
+        ];
+
+        if ($tenantUserId) {
+            \App\Helpers\RealtimeEmitter::emit('incident:status:changed', $realtimePayload, "user_{$tenantUserId}");
+        }
+        \App\Helpers\RealtimeEmitter::emit('incident:status:changed', $realtimePayload, 'admin');
+
         // Nếu hoàn thành và có chi phí, cho phép ghi tự động vào bảng chi phí vận hành
         if ($recordExpense && $status === 'completed') {
             try {
@@ -89,5 +140,6 @@ class MaintenanceController extends Controller
         log_activity('Cập nhật bảo trì', 'maintenance_requests', $id, "Cập nhật trạng thái '{$status}' cho yêu cầu {$request['request_code']}");
         set_flash('success', 'Cập nhật tiến độ xử lý yêu cầu thành công!');
         $this->redirect('/maintenance/show/' . $id);
+
     }
 }

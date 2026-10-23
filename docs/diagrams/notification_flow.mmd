@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    actor Admin as 👨‍💼 Chủ trọ (Admin)
+    participant Server as 🖥️ PHP Backend API
+    participant DB as 🗄️ MySQL Database
+    participant Expo as ☁️ Expo Push Service
+    actor Tenant as 📱 Khách thuê (Mobile App)
+
+    %% Giai đoạn đăng ký Token
+    Note over Tenant, Server: 1. Đăng ký Push Token khi đăng nhập
+    Tenant->>Tenant: Xin quyền Notifications.requestPermissionsAsync()
+    Tenant->>Tenant: Lấy ExpoPushToken[xxxx]
+    Tenant->>Server: POST /api/push-token (Bearer Token, PushToken)
+    Server->>DB: INSERT INTO push_tokens (user_id, token, updated_at)
+    Server-->>Tenant: { success: true, message: "Đã đăng ký token" }
+
+    %% Sự kiện nghiệp vụ 1: Phát hành hóa đơn mới
+    Note over Admin, Tenant: 2. Sự kiện nghiệp vụ 1: Lập & Phát hành hóa đơn
+    Admin->>Server: POST /api/invoices (contract_id, billing_month, amount)
+    Server->>DB: INSERT INTO invoices (invoice_code, total_amount, status='unpaid')
+    Server->>DB: INSERT INTO notifications (title, content, type='payment', ref_id)
+    Server->>DB: SELECT token FROM push_tokens WHERE user_id = target_user_id
+    DB-->>Server: Danh sách push tokens hợp lệ
+    Server->>Expo: POST https://exp.host/--/api/v2/push/send (tokens, payload)
+    Expo-->>Tenant: Gửi Remote Push Notification tới thiết bị
+
+    %% Trạng thái nhận & Điều hướng
+    alt Ứng dụng Foreground
+        Tenant->>Tenant: Listener addNotificationReceivedListener kích hoạt (Hiện banner)
+    else Ứng dụng Background / Terminated
+        Tenant->>Tenant: Hiển thị trên thanh thông báo hệ thống (Notification Tray)
+        Tenant->>Tenant: Người dùng nhấn thông báo -> addNotificationResponseReceivedListener
+        Tenant->>Tenant: Đọc payload { reference_type: 'invoice', invoice_id: 123 }
+        Tenant->>Tenant: Tự động điều hướng đến tab Hóa Đơn & hiển thị chi tiết!
+    end
+
+    %% Sự kiện nghiệp vụ 2: Xác nhận thanh toán
+    Note over Admin, Tenant: 3. Sự kiện nghiệp vụ 2: Xác nhận thanh toán
+    Admin->>Server: POST /api/payments (invoice_id, amount)
+    Server->>DB: INSERT INTO payments (...) & UPDATE invoices status='paid'
+    Server->>DB: INSERT INTO notifications (title="Xác nhận thanh toán", ...)
+    Server->>Expo: Push Notification: "Chủ trọ đã xác nhận thanh toán..."
+    Expo-->>Tenant: Push Alert tới điện thoại người thuê

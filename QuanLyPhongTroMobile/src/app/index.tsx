@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,14 +16,33 @@ import {
   TouchableWithoutFeedback,
   View,
   Image,
-  Linking
+  Linking,
+  TouchableOpacity
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-// IPv4 mặc định của máy tính chạy WAMP Apache (Port 8080)
-const DEFAULT_API_BASE = 'http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route=';
-const API_BASE = 'http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route=';
+import * as Notifications from 'expo-notifications';
+import {
+  registerForPushNotificationsAsync,
+  scheduleLocalReminder,
+  checkInitialNotification,
+  NotificationPayload
+} from '../services/notificationService';
+import {
+  connectSocket,
+  disconnectSocket,
+  onSocketStatusChange,
+  getSocket,
+  SocketStatus
+} from '../services/socketService';
+import {
+  DEFAULT_API_BASE,
+  getRealtimeUrlFromApiBase,
+  getSavedApiBase,
+  setSavedApiBase
+} from '../services/apiService';
+import RoomsView from '../views/RoomsView';
+import InvoicesView from '../views/InvoicesView';
 
 type AnyObj = Record<string, any>;
 
@@ -34,19 +53,24 @@ const statusText: Record<string, string> = {
   partially_paid: 'Thanh toán một phần',
   paid: 'Đã thanh toán',
   overdue: 'Quá hạn',
-  pending: 'Chờ xử lý',
+  pending: 'Chờ tiếp nhận',
   in_progress: 'Đang xử lý',
-  completed: 'Hoàn tất',
+  completed: 'Đã hoàn thành',
   rejected: 'Từ chối'
 };
 
 export default function HomeScreen() {
-  // Cấu hình máy chủ
+  // Cấu hình mạng & máy chủ
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [serverModalVisible, setServerModalVisible] = useState(false);
   const [tempIpInput, setTempIpInput] = useState(DEFAULT_API_BASE);
   const [serverConnected, setServerConnected] = useState<boolean | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
+
+  // Realtime & Push
+  const [socketStatus, setSocketStatus] = useState<SocketStatus>('disconnected');
+  const [pushToken, setPushToken] = useState<string | null>(null);
+  const [realtimeNotice, setRealtimeNotice] = useState<string | null>(null);
 
   // Xác thực & Tài khoản
   const [loginRole, setLoginRole] = useState<'tenant' | 'admin'>('tenant');
@@ -57,14 +81,33 @@ export default function HomeScreen() {
   const [user, setUser] = useState<AnyObj | null>(null);
   const [demoTenants, setDemoTenants] = useState<AnyObj[]>([]);
 
+  // Đăng ký tài khoản
+  const [registerModalVisible, setRegisterModalVisible] = useState(false);
+  const [regFullname, setRegFullname] = useState('');
+  const [regPhone, setRegPhone] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regIdCard, setRegIdCard] = useState('');
+
+  // Điều hướng nội bộ
+  const [page, setPage] = useState<'home' | 'invoices' | 'maintenance' | 'rooms' | 'settings'>('home');
+
   // Dữ liệu hiển thị
   const [dashboard, setDashboard] = useState<AnyObj | null>(null);
-  const [page, setPage] = useState<'home' | 'invoices' | 'maintenance' | 'notifications' | 'settings'>('home');
   const [invoices, setInvoices] = useState<AnyObj[]>([]);
   const [requests, setRequests] = useState<AnyObj[]>([]);
+  const [rooms, setRooms] = useState<AnyObj[]>([]);
+
+  // Form báo sự cố (Tenant)
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
+
+  // Modal cập nhật sự cố (Admin)
+  const [selectedIncident, setSelectedIncident] = useState<AnyObj | null>(null);
+  const [incidentModalVisible, setIncidentModalVisible] = useState(false);
+  const [incidentStatus, setIncidentStatus] = useState<'pending' | 'in_progress' | 'completed' | 'rejected'>('in_progress');
+  const [incidentNotes, setIncidentNotes] = useState('');
+  const [incidentCost, setIncidentCost] = useState('');
 
   // Trạng thái tải
   const [busy, setBusy] = useState(false);
@@ -74,15 +117,12 @@ export default function HomeScreen() {
   useEffect(() => {
     (async () => {
       try {
-        const savedApi = await AsyncStorage.getItem('@qlpt_api_base');
-        const currentApi = savedApi || DEFAULT_API_BASE;
+        const currentApi = await getSavedApiBase();
         setApiBase(currentApi);
         setTempIpInput(currentApi);
 
-        // Kiểm tra kết nối nhanh với máy chủ
         checkServerHealth(currentApi);
 
-        // Khôi phục token nếu có
         const savedToken = await AsyncStorage.getItem('@qlpt_token');
         const savedUser = await AsyncStorage.getItem('@qlpt_user');
         if (savedToken && savedUser) {
@@ -90,7 +130,6 @@ export default function HomeScreen() {
           setUser(JSON.parse(savedUser));
         }
 
-        // Tải danh sách khách thuê mẫu
         fetchDemoTenants(currentApi);
       } catch (err) {
         console.log('Init error:', err);
@@ -98,15 +137,127 @@ export default function HomeScreen() {
     })();
   }, []);
 
-  // Kiểm tra kết nối máy chủ
+  // Lắng nghe trạng thái kết nối Socket.IO
+  useEffect(() => {
+    const unsub = onSocketStatusChange((status) => {
+      setSocketStatus(status);
+    });
+    return unsub;
+  }, []);
+
+  // Thiết lập Socket.IO và Push Notifications sau khi có Token
+  useEffect(() => {
+    if (!token) return;
+
+    // A. Kết nối Socket.IO
+    const realtimeUrl = getRealtimeUrlFromApiBase(apiBase);
+    const socket = connectSocket(realtimeUrl, token);
+
+    // Lắng nghe Realtime Event 1: incident:created (Người thuê báo sự cố -> Chủ trọ nhận)
+    socket.on('incident:created', (data: AnyObj) => {
+      console.log('[Socket] incident:created received:', data);
+      setRealtimeNotice(`🔔 Có sự cố mới từ ${data.room_name || 'phòng trọ'}: "${data.title}"`);
+      setTimeout(() => setRealtimeNotice(null), 8000);
+
+      // Tự động bổ sung vào danh sách sự cố của admin
+      setRequests((prev) => {
+        if (prev.some((r) => r.id === data.id)) return prev;
+        return [data, ...prev];
+      });
+
+      // Tự động cập nhật dashboard số lượng sự cố
+      setDashboard((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          stats: {
+            ...prev.stats,
+            pending_maintenance_count: (prev.stats?.pending_maintenance_count || 0) + 1
+          },
+          maintenance: [data, ...(prev.maintenance || [])]
+        };
+      });
+    });
+
+    // Lắng nghe Realtime Event 2: incident:status:changed (Chủ trọ đổi trạng thái -> Người thuê thấy ngay)
+    socket.on('incident:status:changed', (data: AnyObj) => {
+      console.log('[Socket] incident:status:changed received:', data);
+      setRealtimeNotice(`🔔 Sự cố "${data.title || data.request_code}" đã chuyển sang: ${data.status_text || data.status}`);
+      setTimeout(() => setRealtimeNotice(null), 8000);
+
+      // Cập nhật danh sách sự cố tức thì
+      setRequests((prev) =>
+        prev.map((r) => (r.id === data.id ? { ...r, ...data } : r))
+      );
+
+      // Cập nhật dashboard
+      setDashboard((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          maintenance: (prev.maintenance || []).map((r: AnyObj) =>
+            r.id === data.id ? { ...r, ...data } : r
+          )
+        };
+      });
+    });
+
+    // B. Đăng ký Expo Push Token
+    (async () => {
+      const pToken = await registerForPushNotificationsAsync();
+      if (pToken) {
+        setPushToken(pToken);
+        api('push-token', 'POST', { token: pToken }).catch(() => {});
+      }
+    })();
+
+    // C. Notification Listeners (Foreground & Taps)
+    const notifReceivedSub = Notifications.addNotificationReceivedListener((notification) => {
+      console.log('[Push Received in Foreground]', notification);
+      const title = notification.request.content.title;
+      const body = notification.request.content.body;
+      setRealtimeNotice(`📬 ${title}: ${body}`);
+      setTimeout(() => setRealtimeNotice(null), 7000);
+    });
+
+    const notifResponseSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const payload = response.notification.request.content.data as NotificationPayload;
+      console.log('[Push Tapped]', payload);
+      handleNotificationNavigation(payload);
+    });
+
+    // D. Kiểm tra cold start notification
+    checkInitialNotification().then((payload) => {
+      if (payload) {
+        handleNotificationNavigation(payload);
+      }
+    });
+
+    return () => {
+      socket.off('incident:created');
+      socket.off('incident:status:changed');
+      notifReceivedSub.remove();
+      notifResponseSub.remove();
+    };
+  }, [token, apiBase]);
+
+  // Điều hướng từ Notification Payload
+  const handleNotificationNavigation = (payload: NotificationPayload) => {
+    if (payload.reference_type === 'invoice' || payload.type === 'new_invoice' || payload.type === 'payment_reminder') {
+      openPage('invoices');
+    } else if (payload.reference_type === 'maintenance' || payload.type === 'maintenance_created' || payload.type === 'maintenance_update') {
+      openPage('maintenance');
+    }
+  };
+
+  // Kiểm tra kết nối máy chủ PHP API
   const checkServerHealth = async (baseUrl: string) => {
     setTestingConnection(true);
     try {
+      const clean = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(baseUrl + 'api/health', {
-        signal: controller.signal
-      });
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(clean + 'health', { signal: controller.signal });
       clearTimeout(timeoutId);
       const json = await res.json();
       setServerConnected(json.success === true);
@@ -119,16 +270,16 @@ export default function HomeScreen() {
     }
   };
 
-  // Tải danh sách khách thuê mẫu từ API
+  // Tải danh sách khách thuê mẫu
   const fetchDemoTenants = async (baseUrl: string) => {
     try {
-      const res = await fetch(baseUrl + 'api/demo-tenants');
+      const clean = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+      const res = await fetch(clean + 'demo-tenants');
       const json = await res.json();
       if (json.success && Array.isArray(json.data) && json.data.length > 0) {
         setDemoTenants(json.data);
       }
     } catch {
-      // Giữ danh sách mẫu mặc định nếu không fetch được
       setDemoTenants([
         { id: 1, fullname: 'Nguyễn Văn An', phone: '0912345678', room_name: 'Phòng 101' },
         { id: 2, fullname: 'Trần Thị Bình', phone: '0987654321', room_name: 'Phòng 102' }
@@ -139,10 +290,15 @@ export default function HomeScreen() {
   // Hàm gọi API dùng chung
   const api = async (route: string, method = 'GET', body?: AnyObj) => {
     try {
-      const response = await fetch(apiBase + route, {
+      const cleanBase = apiBase.endsWith('/') ? apiBase : apiBase + '/';
+      const cleanRoute = route.startsWith('/') ? route.slice(1) : route;
+      const url = cleanBase + cleanRoute;
+
+      const response = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
+          Accept: 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         ...(body ? { body: JSON.stringify(body) } : {})
@@ -152,9 +308,7 @@ export default function HomeScreen() {
       try {
         json = await response.json();
       } catch {
-        throw new Error(
-          `Máy chủ phản hồi không phải JSON (HTTP ${response.status}). Đảm bảo IP máy tính đúng (${apiBase}) và Apache WAMP đang chạy cổng 8080.`
-        );
+        throw new Error(`Máy chủ trả về định dạng không hợp lệ (HTTP ${response.status}).`);
       }
 
       if (!response.ok || json.success === false) {
@@ -163,9 +317,7 @@ export default function HomeScreen() {
       return json;
     } catch (e: any) {
       if (e.message && e.message.includes('Network request failed')) {
-        throw new Error(
-          `Không thể kết nối đến máy tính!\n\nKiểm tra:\n1. iPhone và máy tính phải cùng Wi-Fi.\n2. Địa chỉ IP hiện tại: ${apiBase}\n3. Tường lửa Windows cho phép cổng 8080.`
-        );
+        throw new Error(`Không thể kết nối đến máy tính (${apiBase}). Đảm bảo điện thoại và máy tính cùng chung Wi-Fi và Apache đang bật.`);
       }
       throw e;
     }
@@ -175,7 +327,7 @@ export default function HomeScreen() {
   const loadDashboard = useCallback(async () => {
     if (!token) return;
     try {
-      const data = await api('api/dashboard');
+      const data = await api('dashboard');
       setDashboard(data);
     } catch (e: any) {
       Alert.alert('Không tải được dữ liệu', e.message);
@@ -194,38 +346,61 @@ export default function HomeScreen() {
     const targetPass = overridePass ?? password;
 
     if (!targetUser || !targetPass) {
-      return Alert.alert('Thiếu thông tin', 'Vui lòng nhập số điện thoại (hoặc tài khoản) và mật khẩu.');
+      return Alert.alert('Thiếu thông tin', 'Vui lòng nhập tài khoản/số điện thoại và mật khẩu.');
     }
 
     setBusy(true);
     try {
-      const result = await api('api/login', 'POST', {
+      const result = await api('login', 'POST', {
         username: targetUser,
         phone: targetUser,
         password: targetPass
       });
 
-      const payload = result.data ?? result;
-      const accessToken = payload.token ?? payload.access_token;
-
-      if (!accessToken || typeof accessToken !== 'string') {
-        Alert.alert('Lỗi đăng nhập', 'Máy chủ chưa trả về token hợp lệ.');
-        return;
+      const accessToken = result.token;
+      if (!accessToken) {
+        throw new Error('Máy chủ chưa trả về token hợp lệ.');
       }
 
-      const userData = payload.user ?? result.user ?? null;
+      const userData = result.user;
       setUser(userData);
       setToken(accessToken);
       setPassword('');
       setPage('home');
 
-      // Lưu vào AsyncStorage để duy trì đăng nhập trên iPhone
       await AsyncStorage.setItem('@qlpt_token', accessToken);
       if (userData) {
         await AsyncStorage.setItem('@qlpt_user', JSON.stringify(userData));
       }
     } catch (e: any) {
       Alert.alert('Đăng nhập thất bại', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Đăng ký tài khoản khách thuê
+  const handleRegister = async () => {
+    if (!regFullname.trim() || !regPhone.trim() || !regPassword.trim()) {
+      return Alert.alert('Thiếu thông tin', 'Vui lòng điền Họ tên, Số điện thoại và Mật khẩu.');
+    }
+    setBusy(true);
+    try {
+      const res = await api('register', 'POST', {
+        fullname: regFullname.trim(),
+        phone: regPhone.trim(),
+        password: regPassword.trim(),
+        id_card: regIdCard.trim() || null
+      });
+
+      Alert.alert('Thành công', res.message || 'Đăng ký thành công!');
+      setRegisterModalVisible(false);
+      setToken(res.token);
+      setUser(res.user);
+      await AsyncStorage.setItem('@qlpt_token', res.token);
+      await AsyncStorage.setItem('@qlpt_user', JSON.stringify(res.user));
+    } catch (e: any) {
+      Alert.alert('Đăng ký thất bại', e.message);
     } finally {
       setBusy(false);
     }
@@ -244,6 +419,10 @@ export default function HomeScreen() {
 
   // Đăng xuất
   const logout = async () => {
+    if (pushToken) {
+      api('push-token/remove', 'POST', { token: pushToken }).catch(() => {});
+    }
+    disconnectSocket();
     setToken('');
     setUser(null);
     setDashboard(null);
@@ -253,12 +432,12 @@ export default function HomeScreen() {
   };
 
   // Chuyển trang & nạp dữ liệu tương ứng
-  const openPage = async (p: 'home' | 'invoices' | 'maintenance' | 'settings') => {
+  const openPage = async (p: 'home' | 'invoices' | 'maintenance' | 'rooms' | 'settings') => {
     setPage(p);
     if (p === 'invoices') {
       setBusy(true);
       try {
-        const res = await api('api/invoices');
+        const res = await api('invoices');
         setInvoices(res.data || []);
       } catch (e: any) {
         Alert.alert('Lỗi', e.message);
@@ -268,8 +447,18 @@ export default function HomeScreen() {
     } else if (p === 'maintenance') {
       setBusy(true);
       try {
-        const res = await api('api/maintenance');
+        const res = await api('maintenance');
         setRequests(res.data || []);
+      } catch (e: any) {
+        Alert.alert('Lỗi', e.message);
+      } finally {
+        setBusy(false);
+      }
+    } else if (p === 'rooms') {
+      setBusy(true);
+      try {
+        const res = await api('rooms');
+        setRooms(res.data || []);
       } catch (e: any) {
         Alert.alert('Lỗi', e.message);
       } finally {
@@ -278,27 +467,86 @@ export default function HomeScreen() {
     }
   };
 
-  // Gửi yêu cầu sửa chữa
+  // Người thuê gửi yêu cầu sửa chữa
   const sendRequest = async () => {
     if (!title.trim() || !description.trim()) {
       return Alert.alert('Thiếu thông tin', 'Vui lòng nhập tiêu đề và mô tả sự cố.');
     }
     setBusy(true);
     try {
-      const data = await api('api/maintenance', 'POST', {
+      const data = await api('maintenance', 'POST', {
         title: title.trim(),
         description: description.trim(),
         priority
       });
-      Alert.alert('Thành công', data.message || 'Đã gửi yêu cầu sửa chữa.');
+      Alert.alert('Thành công', data.message || 'Đã gửi yêu cầu sửa chữa tới chủ trọ.');
       setTitle('');
       setDescription('');
-      const res = await api('api/maintenance');
+      const res = await api('maintenance');
       setRequests(res.data || []);
     } catch (e: any) {
       Alert.alert('Không gửi được yêu cầu', e.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Chủ trọ cập nhật trạng thái sự cố
+  const handleUpdateIncident = async () => {
+    if (!selectedIncident) return;
+    setBusy(true);
+    try {
+      const res = await api('maintenance/update', 'POST', {
+        id: selectedIncident.id,
+        status: incidentStatus,
+        admin_notes: incidentNotes.trim(),
+        cost: parseFloat(incidentCost) || 0
+      });
+
+      Alert.alert('Thành công', res.message || 'Đã cập nhật trạng thái sự cố.');
+      setIncidentModalVisible(false);
+
+      // Cập nhật danh sách
+      setRequests((prev) =>
+        prev.map((r) =>
+          r.id === selectedIncident.id
+            ? { ...r, status: incidentStatus, admin_notes: incidentNotes, cost: parseFloat(incidentCost) || 0 }
+            : r
+        )
+      );
+    } catch (e: any) {
+      Alert.alert('Lỗi cập nhật sự cố', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Quét và gửi nhắc hạn đóng tiền tự động (Admin)
+  const triggerPaymentReminders = async () => {
+    setBusy(true);
+    try {
+      const res = await api('reminders/run', 'POST');
+      Alert.alert('Tiến trình nhắc nợ tự động', res.message + '\n\n' + (res.log || ''));
+      loadDashboard();
+    } catch (e: any) {
+      Alert.alert('Lỗi', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Thử thông báo cục bộ được lên lịch (5 giây)
+  const handleTestLocalReminder = async () => {
+    const notifId = await scheduleLocalReminder({
+      title: '⏰ Nhắc nhở hạn tiền phòng (Thông báo cục bộ)',
+      body: 'Đây là thông báo nhắc nhở cục bộ được lên lịch sau 5 giây để kiểm tra tính năng thông báo của thiết bị.',
+      seconds: 5,
+      data: { type: 'local_reminder' }
+    });
+    if (notifId) {
+      Alert.alert('Đã lên lịch thông báo cục bộ', 'Hệ thống đã hẹn giờ thông báo sau 5 giây. Bạn có thể ẩn app hoặc khóa màn hình để kiểm tra.');
+    } else {
+      Alert.alert('Không thể đặt lịch', 'Chức năng thông báo cục bộ không được hỗ trợ trên môi trường web hoặc thiếu quyền.');
     }
   };
 
@@ -308,11 +556,14 @@ export default function HomeScreen() {
     try {
       if (page === 'home') await loadDashboard();
       else if (page === 'invoices') {
-        const res = await api('api/invoices');
+        const res = await api('invoices');
         setInvoices(res.data || []);
       } else if (page === 'maintenance') {
-        const res = await api('api/maintenance');
+        const res = await api('maintenance');
         setRequests(res.data || []);
+      } else if (page === 'rooms') {
+        const res = await api('rooms');
+        setRooms(res.data || []);
       }
     } catch (e: any) {
       Alert.alert('Lỗi', e.message);
@@ -324,30 +575,24 @@ export default function HomeScreen() {
   // Lưu cấu hình IP máy chủ mới
   const saveServerIp = async () => {
     let clean = tempIpInput.trim();
-    if (!clean.endsWith('?route=')) {
-      if (clean.endsWith('/')) {
-        clean += 'index.php?route=';
-      } else if (!clean.includes('index.php')) {
-        clean += '/public/index.php?route=';
-      }
-    }
+    if (!clean.endsWith('/')) clean += '/';
     setApiBase(clean);
-    await AsyncStorage.setItem('@qlpt_api_base', clean);
+    await setSavedApiBase(clean);
     setServerModalVisible(false);
     checkServerHealth(clean);
     fetchDemoTenants(clean);
-    Alert.alert('Đã lưu địa chỉ máy chủ', `Địa chỉ API mới:\n${clean}`);
+    Alert.alert('Đã lưu cấu hình', `Địa chỉ máy chủ mới: ${clean}\nSocket Realtime: ${getRealtimeUrlFromApiBase(clean)}`);
   };
 
   // ==========================================
-  // GIAO DIỆN KHI CHƯA ĐĂNG NHẬP (LOGIN SCREEN)
+  // GIAO DIỆN CHƯA ĐĂNG NHẬP (LOGIN SCREEN)
   // ==========================================
   if (!token) {
     return (
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
 
-        {/* Thanh trạng thái kết nối máy chủ phía trên */}
+        {/* Thanh trạng thái kết nối máy chủ WAMP */}
         <Pressable
           style={[
             styles.serverStatusBar,
@@ -362,10 +607,10 @@ export default function HomeScreen() {
           <View style={styles.serverStatusDot} />
           <Text style={styles.serverStatusText} numberOfLines={1}>
             {serverConnected === true
-              ? '🟢 Đã kết nối máy chủ WAMP (192.168.100.36:8080)'
+              ? `🟢 WAMP OK (${apiBase.replace('http://', '').split('/')[0]})`
               : serverConnected === false
-              ? '🔴 Chưa kết nối máy tính · Chạm để đổi IP'
-              : '🟡 Đang kiểm tra kết nối máy chủ...'}
+              ? '🔴 Chưa kết nối WAMP · Chạm để đổi IP'
+              : '🟡 Đang kiểm tra máy chủ...'}
           </Text>
           <Text style={styles.serverChangeBtn}>Đổi IP</Text>
         </Pressable>
@@ -373,7 +618,6 @@ export default function HomeScreen() {
         <KeyboardAvoidingView
           style={styles.keyboardWrap}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 20 : 0}
         >
           <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
             <ScrollView
@@ -381,18 +625,16 @@ export default function HomeScreen() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              {/* Logo & Tiêu đề ứng dụng */}
               <View style={styles.brandHeader}>
                 <View style={styles.logoBadge}>
                   <Text style={styles.logoIcon}>🏠</Text>
                 </View>
-                <Text style={styles.brandTitle}>QUẢN LÝ PHÒNG TRỌ</Text>
-                <Text style={styles.brandSub}>Cổng Dành Cho Khách Thuê Phòng</Text>
+                <Text style={styles.brandTitle}>QUẢN LÝ NHÀ TRỌ</Text>
+                <Text style={styles.brandSub}>Hệ Thống Realtime & Push Notification</Text>
               </View>
 
-              {/* Hộp đăng nhập chính */}
               <View style={styles.loginCard}>
-                {/* Tab chuyển đổi vai trò */}
+                {/* Chọn vai trò */}
                 <View style={styles.roleTabs}>
                   <Pressable
                     style={[styles.roleTab, loginRole === 'tenant' && styles.roleTabActive]}
@@ -410,28 +652,27 @@ export default function HomeScreen() {
                     style={[styles.roleTab, loginRole === 'admin' && styles.roleTabActive]}
                     onPress={() => {
                       setLoginRole('admin');
-                      setUsername('quanli');
+                      setUsername('admin');
                       setPassword('NhaTro@2026');
                     }}
                   >
                     <Text style={[styles.roleTabText, loginRole === 'admin' && styles.roleTabTextActive]}>
-                      🛡️ Quản lý
+                      🛡️ Chủ trọ / Admin
                     </Text>
                   </Pressable>
                 </View>
 
                 <Text style={styles.loginCardHeading}>
-                  {loginRole === 'tenant' ? 'Khách thuê đăng nhập' : 'Quản trị viên đăng nhập'}
+                  {loginRole === 'tenant' ? 'Khách thuê đăng nhập' : 'Chủ trọ / Quản lý đăng nhập'}
                 </Text>
                 <Text style={styles.loginCardMuted}>
                   {loginRole === 'tenant'
-                    ? 'Nhập số điện thoại đã ký hợp đồng hoặc tên tài khoản.'
-                    : 'Đăng nhập vào hệ thống quản lý phòng trọ.'}
+                    ? 'Đăng nhập để xem phòng, hóa đơn và nhận thông báo realtime.'
+                    : 'Đăng nhập để quản lý phòng, phát hành hóa đơn và xử lý sự cố.'}
                 </Text>
 
-                {/* Trường Tài khoản / Số điện thoại */}
                 <Text style={styles.fieldLabel}>
-                  {loginRole === 'tenant' ? 'Số điện thoại hoặc tên đăng nhập' : 'Tên đăng nhập'}
+                  {loginRole === 'tenant' ? 'Số điện thoại hoặc tài khoản' : 'Tên tài khoản quản trị'}
                 </Text>
                 <View style={styles.inputWrap}>
                   <Text style={styles.inputIcon}>{loginRole === 'tenant' ? '📱' : '👤'}</Text>
@@ -441,13 +682,12 @@ export default function HomeScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     keyboardType={loginRole === 'tenant' ? 'phone-pad' : 'default'}
-                    placeholder={loginRole === 'tenant' ? 'Ví dụ: 0912345678' : 'Nhập tài khoản'}
+                    placeholder={loginRole === 'tenant' ? 'Ví dụ: 0912345678' : 'admin'}
                     placeholderTextColor="#94A3B8"
                     style={styles.textInput}
                   />
                 </View>
 
-                {/* Trường Mật khẩu */}
                 <Text style={styles.fieldLabel}>Mật khẩu</Text>
                 <View style={styles.inputWrap}>
                   <Text style={styles.inputIcon}>🔒</Text>
@@ -465,23 +705,28 @@ export default function HomeScreen() {
                   </Pressable>
                 </View>
 
-                {/* Nút bấm đăng nhập */}
                 <Pressable
                   style={[styles.primaryBtn, busy && styles.disabledBtn]}
                   onPress={() => login()}
                   disabled={busy}
                 >
-                  {busy ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.primaryBtnText}>ĐĂNG NHẬP NGAY</Text>
-                  )}
+                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>ĐĂNG NHẬP</Text>}
                 </Pressable>
 
-                {/* Khu vực khách thuê mẫu (1 chạm) */}
+                {loginRole === 'tenant' && (
+                  <View style={{ marginTop: 12, alignItems: 'center' }}>
+                    <TouchableOpacity onPress={() => setRegisterModalVisible(true)}>
+                      <Text style={{ color: '#2563EB', fontWeight: '600', fontSize: 13 }}>
+                        Chưa có tài khoản? Bấm vào đây để đăng ký
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {/* Khách thuê mẫu một chạm */}
                 {loginRole === 'tenant' && (
                   <View style={styles.quickBox}>
-                    <Text style={styles.quickTitle}>⚡ Đăng nhập mẫu khách hàng (1 chạm):</Text>
+                    <Text style={styles.quickTitle}>⚡ Đăng nhập mẫu khách thuê (1 chạm):</Text>
                     <View style={styles.quickList}>
                       {demoTenants.map((t) => (
                         <Pressable
@@ -496,31 +741,31 @@ export default function HomeScreen() {
                         </Pressable>
                       ))}
                     </View>
-                    <Text style={styles.quickHint}>
-                      * Chạm trực tiếp vào tên khách thuê để tự điền và đăng nhập ngay.
-                    </Text>
                   </View>
                 )}
-              </View>
 
-              {/* Gợi ý cài đặt Android & iOS */}
-              <View style={styles.iosHelpCard}>
-                <Text style={styles.iosHelpTitle}>📱 Hướng dẫn chạy trên điện thoại thật (Android & iOS):</Text>
-                <Text style={styles.iosHelpItem}>
-                  1. Điện thoại và máy tính kết nối <Text style={styles.boldText}>chung mạng Wi-Fi</Text>.
-                </Text>
-                <Text style={styles.iosHelpItem}>
-                  2. Mở app <Text style={styles.boldText}>Expo Go</Text> (tải từ CH Play trên Android hoặc App Store trên iOS) rồi quét mã QR.
-                </Text>
-                <Text style={styles.iosHelpItem}>
-                  3. Địa chỉ máy tính kết nối: <Text style={styles.boldText}>192.168.100.36:8080</Text>.
-                </Text>
+                {/* Admin mẫu một chạm */}
+                {loginRole === 'admin' && (
+                  <View style={styles.quickBox}>
+                    <Text style={styles.quickTitle}>⚡ Tài khoản Quản trị mẫu:</Text>
+                    <Pressable
+                      style={styles.quickChip}
+                      onPress={() => {
+                        setUsername('admin');
+                        setPassword('NhaTro@2026');
+                        login('admin', 'NhaTro@2026');
+                      }}
+                    >
+                      <Text style={styles.quickChipName}>🛡️ Tài khoản: admin (Mật khẩu: NhaTro@2026)</Text>
+                    </Pressable>
+                  </View>
+                )}
               </View>
             </ScrollView>
           </TouchableWithoutFeedback>
         </KeyboardAvoidingView>
 
-        {/* Modal cấu hình IP máy chủ */}
+        {/* Modal Cấu hình IP */}
         <Modal
           visible={serverModalVisible}
           transparent
@@ -529,9 +774,9 @@ export default function HomeScreen() {
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>⚙️ Cấu hình máy chủ API</Text>
+              <Text style={styles.modalTitle}>⚙️ Cấu hình địa chỉ máy chủ</Text>
               <Text style={styles.modalSub}>
-                Nhập địa chỉ máy tính chạy WAMP để điện thoại (Android & iOS) gửi nhận dữ liệu:
+                Nhập địa chỉ máy tính chạy WAMP để điện thoại truy cập API và Socket.IO:
               </Text>
 
               <TextInput
@@ -540,30 +785,25 @@ export default function HomeScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 style={styles.modalInput}
-                placeholder="http://192.168.100.36:8080/QuanLyPhongTro/public/index.php?route="
+                placeholder="http://172.23.4.219:8080/QuanLyPhongTro/api/"
               />
 
-              {/* Các nút chọn nhanh */}
               <View style={styles.presetWrap}>
                 <Pressable
                   style={styles.presetBtn}
-                  onPress={() => setTempIpInput(DEFAULT_API_BASE)}
+                  onPress={() => setTempIpInput('http://172.23.4.219:8080/QuanLyPhongTro/api/')}
                 >
-                  <Text style={styles.presetText}>IP Wi-Fi (192.168.100.36:8080)</Text>
+                  <Text style={styles.presetText}>IP Wi-Fi (172.23.4.219:8080)</Text>
                 </Pressable>
                 <Pressable
                   style={styles.presetBtn}
-                  onPress={() =>
-                    setTempIpInput('http://10.0.2.2:8080/QuanLyPhongTro/public/index.php?route=')
-                  }
+                  onPress={() => setTempIpInput('http://10.0.2.2:8080/QuanLyPhongTro/api/')}
                 >
-                  <Text style={styles.presetText}>Giả lập Android (10.0.2.2:8080)</Text>
+                  <Text style={styles.presetText}>Android Emulator (10.0.2.2:8080)</Text>
                 </Pressable>
                 <Pressable
                   style={styles.presetBtn}
-                  onPress={() =>
-                    setTempIpInput('http://127.0.0.1:8080/QuanLyPhongTro/public/index.php?route=')
-                  }
+                  onPress={() => setTempIpInput('http://localhost:8080/QuanLyPhongTro/api/')}
                 >
                   <Text style={styles.presetText}>Localhost:8080</Text>
                 </Pressable>
@@ -575,23 +815,74 @@ export default function HomeScreen() {
                   onPress={() => checkServerHealth(tempIpInput)}
                   disabled={testingConnection}
                 >
-                  {testingConnection ? (
-                    <ActivityIndicator size="small" color="#2563EB" />
-                  ) : (
-                    <Text style={styles.modalBtnTestText}>🔍 Thử kết nối</Text>
-                  )}
+                  {testingConnection ? <ActivityIndicator size="small" color="#2563EB" /> : <Text style={styles.modalBtnTestText}>🔍 Thử kết nối</Text>}
                 </Pressable>
                 <Pressable style={[styles.modalBtn, styles.modalBtnSave]} onPress={saveServerIp}>
                   <Text style={styles.modalBtnSaveText}>Lưu & Áp dụng</Text>
                 </Pressable>
               </View>
 
-              <Pressable
-                style={styles.modalCloseBtn}
-                onPress={() => setServerModalVisible(false)}
-              >
+              <Pressable style={styles.modalCloseBtn} onPress={() => setServerModalVisible(false)}>
                 <Text style={styles.modalCloseText}>Đóng</Text>
               </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Modal Đăng Ký Tài Khoản */}
+        <Modal
+          visible={registerModalVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setRegisterModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalCard, { maxHeight: '90%' }]}>
+              <Text style={styles.modalTitle}>📝 Đăng ký tài khoản khách thuê</Text>
+              <Text style={styles.modalSub}>Nhập thông tin cá nhân để tạo tài khoản mới:</Text>
+
+              <Text style={styles.fieldLabel}>Họ và tên (*)</Text>
+              <TextInput
+                value={regFullname}
+                onChangeText={setRegFullname}
+                style={styles.modalInput}
+                placeholder="Ví dụ: Lê Hoàng Nam"
+              />
+
+              <Text style={styles.fieldLabel}>Số điện thoại (*)</Text>
+              <TextInput
+                value={regPhone}
+                onChangeText={setRegPhone}
+                keyboardType="phone-pad"
+                style={styles.modalInput}
+                placeholder="Ví dụ: 0912345678"
+              />
+
+              <Text style={styles.fieldLabel}>Mật khẩu (*)</Text>
+              <TextInput
+                value={regPassword}
+                onChangeText={setRegPassword}
+                secureTextEntry
+                style={styles.modalInput}
+                placeholder="Tối thiểu 6 ký tự"
+              />
+
+              <Text style={styles.fieldLabel}>Số CCCD/CMND (Tùy chọn)</Text>
+              <TextInput
+                value={regIdCard}
+                onChangeText={setRegIdCard}
+                style={styles.modalInput}
+                placeholder="Số CCCD"
+              />
+
+              <View style={styles.modalActions}>
+                <Pressable style={[styles.modalBtn, styles.modalBtnSave]} onPress={handleRegister}>
+                  <Text style={styles.modalBtnSaveText}>Hoàn tất đăng ký</Text>
+                </Pressable>
+                <Pressable style={[styles.modalBtn, styles.modalBtnTest]} onPress={() => setRegisterModalVisible(false)}>
+                  <Text style={styles.modalBtnTestText}>Hủy</Text>
+                </Pressable>
+              </View>
             </View>
           </View>
         </Modal>
@@ -600,20 +891,47 @@ export default function HomeScreen() {
   }
 
   // ==========================================
-  // GIAO DIỆN SAU KHI ĐĂNG NHẬP (TENANT PORTAL)
+  // GIAO DIỆN ĐÃ ĐĂNG NHẬP (ADMIN HOẶC TENANT)
   // ==========================================
+  const isAdmin = user?.role === 'admin';
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <StatusBar barStyle="light-content" backgroundColor="#1E293B" />
+      <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
 
       {/* Top Header */}
       <View style={styles.appHeader}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.appHeaderSmall}>QUẢN LÝ PHÒNG TRỌ · KHÁCH THUÊ</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={styles.appHeaderSmall}>
+              {isAdmin ? 'QUẢN TRỊ VIÊN' : 'KHÁCH THUÊ'}
+            </Text>
+            {/* Realtime Socket Badge */}
+            <View
+              style={[
+                styles.socketBadge,
+                socketStatus === 'connected'
+                  ? styles.socketOk
+                  : socketStatus === 'connecting'
+                  ? styles.socketConnecting
+                  : styles.socketErr
+              ]}
+            >
+              <Text style={styles.socketText}>
+                {socketStatus === 'connected'
+                  ? '🟢 Realtime'
+                  : socketStatus === 'connecting'
+                  ? '🟡 Đang kết nối...'
+                  : '🔴 Mất kết nối'}
+              </Text>
+            </View>
+          </View>
+
           <Text style={styles.appHeaderTitle} numberOfLines={1}>
-            Xin chào, {dashboard?.tenant?.fullname || user?.fullname || 'Bạn'} 👋
+            Xin chào, {user?.fullname || user?.username || 'Bạn'} 👋
           </Text>
-          {dashboard?.room && (
+
+          {!isAdmin && dashboard?.room && (
             <Text style={styles.appHeaderRoom}>
               📍 {dashboard.room.room_number || dashboard.room.room_code} · {dashboard.room.area_name}
             </Text>
@@ -625,15 +943,21 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
+      {/* Realtime Alert Banner */}
+      {realtimeNotice && (
+        <View style={styles.realtimeBanner}>
+          <Text style={styles.realtimeBannerText}>{realtimeNotice}</Text>
+        </View>
+      )}
+
       {/* Thanh Menu điều hướng 5 Tab */}
       <View style={styles.topTabBar}>
         {[
           ['home', 'Tổng quan', '🏠'],
           ['invoices', 'Hóa đơn', '🧾'],
-          ['maintenance', 'Báo sửa', '🛠️'],
-          ['notifications', 'Thông báo', '🔔'],
-          ['settings', 'Cài đặt', '⚙️']
-          
+          ['maintenance', isAdmin ? 'Xử lý sự cố' : 'Báo sự cố', '🛠️'],
+          ...(isAdmin ? [['rooms', 'Phòng trọ', '🚪']] : []),
+          ['settings', 'Tiện ích', '⚙️']
         ].map(([key, label, icon]) => (
           <Pressable
             key={key}
@@ -656,481 +980,425 @@ export default function HomeScreen() {
       >
         {busy && <ActivityIndicator style={{ marginVertical: 12 }} color="#2563EB" size="large" />}
 
-        {/* ================= TAB 1: TỔNG QUAN ================= */}
+        {/* ============================================================== */}
+        {/* TAB 1: TỔNG QUAN                                                */}
+        {/* ============================================================== */}
         {page === 'home' && (
           <>
-            {/* Banner chào mừng */}
-            <View style={styles.welcomeHero}>
-              <Text style={styles.heroGreeting}>Phòng của bạn</Text>
-              <Text style={styles.heroDesc}>
-                Xem hợp đồng, tra cứu hóa đơn và gửi yêu cầu sửa chữa tức thì.
-              </Text>
-            </View>
-
-            {/* Thông tin phòng đang thuê */}
-            <Text style={styles.blockTitle}>🏠 Thông tin phòng ở</Text>
-            {dashboard?.room ? (
-              <View style={styles.premiumCard}>
-                <View style={styles.roomHeadRow}>
-                  <Text style={styles.roomHeaderName}>
-                    {dashboard.room.room_number || dashboard.room.room_code}
-                  </Text>
-                  <View style={styles.activeTag}>
-                    <Text style={styles.activeTagText}>Đang thuê</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.cardMuted}>
-                  {dashboard.room.area_name} · {dashboard.room.area_size} m²
-                </Text>
-                <Text style={styles.cardAddress}>📍 {dashboard.room.address}</Text>
-
-                <View style={styles.divider} />
-
-                <View style={styles.priceRow}>
-                  <Text style={styles.priceLabel}>Giá thuê:</Text>
-                  <Text style={styles.priceHighlight}>
-                    {money(dashboard.room.rent_price)}
-                    <Text style={styles.priceUnit}> / tháng</Text>
+            {/* GIAO DIỆN TỔNG QUAN CHỦ TRỌ / ADMIN */}
+            {isAdmin ? (
+              <>
+                <View style={styles.welcomeHeroAdmin}>
+                  <Text style={styles.heroGreeting}>Bảng điều khiển quản trị</Text>
+                  <Text style={styles.heroDesc}>
+                    Theo dõi tình trạng phòng trọ, hóa đơn và sự cố kỹ thuật trong thời gian thực.
                   </Text>
                 </View>
 
-                <View style={styles.infoGrid}>
-                  <View style={styles.infoCol}>
-                    <Text style={styles.infoKey}>Mã hợp đồng</Text>
-                    <Text style={styles.infoVal}>{dashboard.room.contract_code}</Text>
+                {/* Thống kê phòng */}
+                <Text style={styles.blockTitle}>📊 Tình trạng phòng trọ</Text>
+                <View style={styles.statGrid}>
+                  <View style={[styles.statCard, { borderLeftColor: '#3B82F6' }]}>
+                    <Text style={styles.statVal}>{dashboard?.stats?.rooms?.total || 0}</Text>
+                    <Text style={styles.statLabel}>Tổng số phòng</Text>
                   </View>
-                  <View style={styles.infoCol}>
-                    <Text style={styles.infoKey}>Thời hạn hợp đồng</Text>
-                    <Text style={styles.infoVal}>
-                      {dashboard.room.start_date} → {dashboard.room.end_date}
+                  <View style={[styles.statCard, { borderLeftColor: '#10B981' }]}>
+                    <Text style={[styles.statVal, { color: '#059669' }]}>
+                      {dashboard?.stats?.rooms?.rented || 0}
                     </Text>
+                    <Text style={styles.statLabel}>Đang cho thuê</Text>
+                  </View>
+                  <View style={[styles.statCard, { borderLeftColor: '#F59E0B' }]}>
+                    <Text style={[styles.statVal, { color: '#D97706' }]}>
+                      {dashboard?.stats?.rooms?.empty || 0}
+                    </Text>
+                    <Text style={styles.statLabel}>Phòng còn trống</Text>
+                  </View>
+                  <View style={[styles.statCard, { borderLeftColor: '#EF4444' }]}>
+                    <Text style={[styles.statVal, { color: '#DC2626' }]}>
+                      {dashboard?.stats?.pending_maintenance_count || 0}
+                    </Text>
+                    <Text style={styles.statLabel}>Sự cố chờ xử lý</Text>
                   </View>
                 </View>
-              </View>
-            ) : (
-              <View style={styles.premiumCard}>
-                <Text style={styles.cardMuted}>Chưa có hợp đồng thuê phòng nào đang kích hoạt.</Text>
-              </View>
-            )}
 
-            {/* Hóa đơn gần đây */}
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.blockTitle}>🧾 Hóa đơn gần đây</Text>
-              <Pressable onPress={() => openPage('invoices')}>
-                <Text style={styles.seeMoreLink}>Xem tất cả →</Text>
-              </Pressable>
-            </View>
-
-            {(dashboard?.invoices ?? []).map((inv: AnyObj) => (
-              <View key={inv.id} style={styles.itemRowCard}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.itemRowTitle}>
-                    {inv.invoice_code} · Kỳ {inv.billing_month}
-                  </Text>
-                  <Text style={styles.itemRowMuted}>Tổng: {money(inv.total_amount)}</Text>
-                  <Text style={styles.itemRowSub}>
-                    Còn nợ: <Text style={styles.boldDanger}>{money(inv.remaining_amount)}</Text>
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.badge,
-                    inv.status === 'paid'
-                      ? styles.badgeGreen
-                      : inv.status === 'partially_paid'
-                      ? styles.badgeBlue
-                      : styles.badgeOrange
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.badgeText,
-                      inv.status === 'paid'
-                        ? styles.badgeTextGreen
-                        : inv.status === 'partially_paid'
-                        ? styles.badgeTextBlue
-                        : styles.badgeTextOrange
-                    ]}
+                {/* Nút hành động nhanh của Admin */}
+                <View style={{ marginTop: 12, marginBottom: 16 }}>
+                  <TouchableOpacity
+                    style={styles.cronActionBtn}
+                    onPress={triggerPaymentReminders}
                   >
-                    {statusText[inv.status] || inv.status}
+                    <Text style={styles.cronActionText}>
+                      ⚡ Quét & Gửi nhắc hạn thanh toán (Server Push)
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Danh sách sự cố cần xử lý gấp */}
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.blockTitle}>🛠️ Sự cố cần tiếp nhận gần đây</Text>
+                  <Pressable onPress={() => openPage('maintenance')}>
+                    <Text style={styles.seeMoreLink}>Xem tất cả →</Text>
+                  </Pressable>
+                </View>
+
+                {(dashboard?.maintenance || []).map((m: AnyObj) => (
+                  <Pressable
+                    key={m.id}
+                    style={styles.itemRowCard}
+                    onPress={() => {
+                      setSelectedIncident(m);
+                      setIncidentStatus(m.status || 'in_progress');
+                      setIncidentNotes(m.admin_notes || '');
+                      setIncidentCost(m.cost ? String(m.cost) : '');
+                      setIncidentModalVisible(true);
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemRowTitle}>
+                        [{m.room_number || m.room_code || 'Phòng'}] {m.title}
+                      </Text>
+                      <Text style={styles.itemRowMuted}>Người báo: {m.tenant_name}</Text>
+                      <Text style={styles.itemRowSub}>{m.description}</Text>
+                    </View>
+                    <View style={[styles.badge, m.status === 'completed' ? styles.badgeGreen : styles.badgeOrange]}>
+                      <Text style={styles.badgeText}>{statusText[m.status] || m.status}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </>
+            ) : (
+              /* GIAO DIỆN TỔNG QUAN NGƯỜI THUÊ */
+              <>
+                <View style={styles.welcomeHero}>
+                  <Text style={styles.heroGreeting}>Phòng của bạn</Text>
+                  <Text style={styles.heroDesc}>
+                    Xem hợp đồng, tra cứu hóa đơn và gửi yêu cầu sửa chữa tức thì.
                   </Text>
                 </View>
-              </View>
-            ))}
 
-            {!dashboard?.invoices?.length && (
-              <Text style={styles.emptyText}>Chưa có hóa đơn nào được phát hành.</Text>
+                {/* Thông tin phòng đang thuê */}
+                <Text style={styles.blockTitle}>🏠 Thông tin phòng ở</Text>
+                {dashboard?.room ? (
+                  <View style={styles.premiumCard}>
+                    <View style={styles.roomHeadRow}>
+                      <Text style={styles.roomHeaderName}>
+                        {dashboard.room.room_number || dashboard.room.room_code}
+                      </Text>
+                      <View style={styles.activeTag}>
+                        <Text style={styles.activeTagText}>Đang thuê</Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.cardMuted}>
+                      {dashboard.room.area_name} · {dashboard.room.area_size} m²
+                    </Text>
+                    <Text style={styles.cardAddress}>📍 {dashboard.room.address}</Text>
+
+                    <View style={styles.divider} />
+
+                    <View style={styles.priceRow}>
+                      <Text style={styles.priceLabel}>Giá thuê:</Text>
+                      <Text style={styles.priceHighlight}>
+                        {money(dashboard.room.price || dashboard.room.rent_price)}
+                        <Text style={styles.priceUnit}> / tháng</Text>
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.premiumCard}>
+                    <Text style={styles.cardMuted}>Chưa có hợp đồng thuê phòng nào đang kích hoạt.</Text>
+                  </View>
+                )}
+
+                {/* Hóa đơn gần đây */}
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.blockTitle}>🧾 Hóa đơn gần đây</Text>
+                  <Pressable onPress={() => openPage('invoices')}>
+                    <Text style={styles.seeMoreLink}>Xem tất cả →</Text>
+                  </Pressable>
+                </View>
+
+                {(dashboard?.invoices ?? []).map((inv: AnyObj) => (
+                  <View key={inv.id} style={styles.itemRowCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemRowTitle}>
+                        {inv.invoice_code} · Kỳ {inv.billing_month}
+                      </Text>
+                      <Text style={styles.itemRowMuted}>Tổng: {money(inv.total_amount)}</Text>
+                      <Text style={styles.itemRowSub}>
+                        Còn nợ: <Text style={styles.boldDanger}>{money(inv.remaining_amount)}</Text>
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.badge,
+                        inv.status === 'paid' ? styles.badgeGreen : styles.badgeOrange
+                      ]}
+                    >
+                      <Text style={styles.badgeText}>{statusText[inv.status] || inv.status}</Text>
+                    </View>
+                  </View>
+                ))}
+              </>
             )}
-
           </>
         )}
 
-        {/* ================= TAB 2: HÓA ĐƠN ================= */}
+        {/* ============================================================== */}
+        {/* TAB 2: HÓA ĐƠN                                                  */}
+        {/* ============================================================== */}
         {page === 'invoices' && (
+          <InvoicesView isAdmin={isAdmin} />
+        )}
+
+        {/* ============================================================== */}
+        {/* TAB 3: BÁO SỰ CỐ / XỬ LÝ SỰ CỐ                                   */}
+        {/* ============================================================== */}
+        {page === 'maintenance' && (
           <>
-            <Text style={styles.blockTitle}>🧾 Danh sách hóa đơn chi tiết</Text>
-            <Text style={styles.tabSubDesc}>
-              Tra cứu tiền phòng, chỉ số điện nước và các khoản phí dịch vụ hàng tháng.
+            {/* Nếu là Người thuê: Hiện form báo sự cố */}
+            {!isAdmin && (
+              <>
+                <Text style={styles.blockTitle}>🛠️ Gửi yêu cầu sửa chữa / Báo sự cố</Text>
+                <View style={styles.premiumCard}>
+                  <Text style={styles.fieldLabel}>Tiêu đề sự cố (*)</Text>
+                  <TextInput
+                    value={title}
+                    onChangeText={setTitle}
+                    placeholder="Ví dụ: Vòi xịt vệ sinh rỉ nước, máy lạnh không mát..."
+                    placeholderTextColor="#94A3B8"
+                    style={styles.textInputRegular}
+                  />
+
+                  <Text style={styles.fieldLabel}>Mức độ ưu tiên</Text>
+                  <View style={styles.priorityRow}>
+                    {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
+                      <Pressable
+                        key={p}
+                        onPress={() => setPriority(p)}
+                        style={[styles.priorityBtn, priority === p && styles.priorityBtnActive]}
+                      >
+                        <Text style={[styles.priorityBtnText, priority === p && styles.priorityBtnTextActive]}>
+                          {p === 'low' ? 'Thấp' : p === 'medium' ? 'Bình thường' : p === 'high' ? 'Cao' : 'Khẩn cấp 🚨'}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <Text style={styles.fieldLabel}>Mô tả chi tiết sự cố (*)</Text>
+                  <TextInput
+                    value={description}
+                    onChangeText={setDescription}
+                    multiline
+                    textAlignVertical="top"
+                    placeholder="Mô tả cụ thể vị trí và tình trạng sự cố để chủ trọ tiếp nhận..."
+                    placeholderTextColor="#94A3B8"
+                    style={[styles.textInputRegular, { height: 80 }]}
+                  />
+
+                  <Pressable
+                    style={[styles.primaryBtn, busy && styles.disabledBtn]}
+                    onPress={sendRequest}
+                    disabled={busy}
+                  >
+                    <Text style={styles.primaryBtnText}>GỬI YÊU CẦU SỬA CHỮA</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+
+            {/* Danh sách sự cố (Admin xem tất cả; Người thuê xem sự cố của mình) */}
+            <Text style={[styles.blockTitle, { marginTop: 18 }]}>
+              {isAdmin ? '📋 Danh sách sự cố từ tất cả phòng trọ' : '📋 Lịch sử sự cố đã gửi'}
             </Text>
 
-            {invoices.map((inv) => (
-              <View key={inv.id} style={styles.premiumCard}>
-                <View style={styles.roomHeadRow}>
-                  <Text style={styles.invoiceCode}>{inv.invoice_code}</Text>
+            {requests.map((r) => (
+              <Pressable
+                key={r.id}
+                style={styles.itemRowCard}
+                onPress={() => {
+                  if (isAdmin) {
+                    setSelectedIncident(r);
+                    setIncidentStatus(r.status || 'in_progress');
+                    setIncidentNotes(r.admin_notes || '');
+                    setIncidentCost(r.cost ? String(r.cost) : '');
+                    setIncidentModalVisible(true);
+                  }
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.itemRowTitle}>
+                    {isAdmin && `[${r.room_number || r.room_code || 'Phòng'}] `}
+                    {r.title}
+                  </Text>
+                  {isAdmin && (
+                    <Text style={{ fontSize: 12, color: '#2563EB', marginBottom: 2 }}>
+                      Người báo: {r.tenant_name} ({r.tenant_phone})
+                    </Text>
+                  )}
+                  <Text style={styles.itemRowMuted}>{r.description}</Text>
+                  {r.admin_notes ? (
+                    <Text style={[styles.itemRowMuted, { color: '#0369A1', marginTop: 4 }]}>
+                      💬 Phản hồi chủ trọ: {r.admin_notes}
+                    </Text>
+                  ) : null}
+                  <Text style={styles.dateStamp}>🕒 {r.created_at}</Text>
+                </View>
+
+                <View style={{ alignItems: 'flex-end', justifyContent: 'space-between' }}>
                   <View
                     style={[
                       styles.badge,
-                      inv.status === 'paid'
+                      r.status === 'completed'
                         ? styles.badgeGreen
-                        : inv.status === 'partially_paid'
+                        : r.status === 'in_progress'
                         ? styles.badgeBlue
+                        : r.status === 'rejected'
+                        ? styles.badgeRed
                         : styles.badgeOrange
                     ]}
                   >
-                    <Text
-                      style={[
-                        styles.badgeText,
-                        inv.status === 'paid'
-                          ? styles.badgeTextGreen
-                          : inv.status === 'partially_paid'
-                          ? styles.badgeTextBlue
-                          : styles.badgeTextOrange
-                      ]}
-                    >
-                      {statusText[inv.status] || inv.status}
-                    </Text>
+                    <Text style={styles.badgeText}>{statusText[r.status] || r.status}</Text>
                   </View>
-                </View>
-
-                <Text style={styles.billingMonth}>Kỳ thanh toán: {inv.billing_month}</Text>
-
-                <View style={styles.divider} />
-
-                {/* Chi tiết từng khoản phí */}
-                <View style={styles.feeRow}>
-                  <Text style={styles.feeLabel}>Tiền phòng:</Text>
-                  <Text style={styles.feeVal}>{money(inv.room_price)}</Text>
-                </View>
-                <View style={styles.feeRow}>
-                  <Text style={styles.feeLabel}>Tiền điện:</Text>
-                  <Text style={styles.feeVal}>{money(inv.electricity_amount)}</Text>
-                </View>
-                <View style={styles.feeRow}>
-                  <Text style={styles.feeLabel}>Tiền nước:</Text>
-                  <Text style={styles.feeVal}>{money(inv.water_amount)}</Text>
-                </View>
-                <View style={styles.feeRow}>
-                  <Text style={styles.feeLabel}>Dịch vụ & phí khác:</Text>
-                  <Text style={styles.feeVal}>
-                    {money(Number(inv.service_amount || 0) + Number(inv.other_fees || 0))}
-                  </Text>
-                </View>
-
-                <View style={styles.divider} />
-
-                {/* Tổng kết tiền */}
-                <View style={styles.feeRow}>
-                  <Text style={styles.boldText}>Tổng thanh toán:</Text>
-                  <Text style={styles.totalHighlight}>{money(inv.total_amount)}</Text>
-                </View>
-                <View style={styles.feeRow}>
-                  <Text style={styles.cardMuted}>Đã trả:</Text>
-                  <Text style={styles.paidHighlight}>{money(inv.paid_amount)}</Text>
-                </View>
-                <View style={styles.feeRow}>
-                  <Text style={styles.cardMuted}>Còn lại cần nộp:</Text>
-                  <Text style={styles.boldDanger}>{money(inv.remaining_amount)}</Text>
-                </View>
-
-                {inv.due_date && (
-                  <Text style={styles.dueDateStamp}>📅 Hạn đóng tiền: {inv.due_date}</Text>
-                )}
-
-                
-{/* THANH TOÁN HÓA ĐƠN BẰNG VIETQR */}
-{Number(inv.remaining_amount) > 0 && (
-  <View
-    style={{
-      marginTop: 18,
-      padding: 16,
-      backgroundColor: '#F0FDF4',
-      borderRadius: 14,
-      borderWidth: 1,
-      borderColor: '#BBF7D0',
-      alignItems: 'center',
-    }}
-  >
-    <Text
-      style={{
-        fontSize: 17,
-        fontWeight: 'bold',
-        color: '#166534',
-        marginBottom: 8,
-      }}
-    >
-      💳 Thanh toán tiền phòng
-    </Text>
-
-    <Text
-      style={{
-        color: '#166534',
-        textAlign: 'center',
-        marginBottom: 12,
-      }}
-    >
-      Quét mã QR bằng ứng dụng ngân hàng để chuyển khoản.
-    </Text>
-
-    {inv.vietqr_url ? (
-      <Image
-        source={{ uri: inv.vietqr_url }}
-        style={{
-          width: 220,
-          height: 220,
-          backgroundColor: '#FFFFFF',
-          borderRadius: 10,
-        }}
-        resizeMode="contain"
-      />
-    ) : (
-      <Text style={{ color: '#B91C1C', textAlign: 'center' }}>
-        Chưa có mã QR. Vui lòng kiểm tra cấu hình ngân hàng trên WAMP.
-      </Text>
-    )}
-
-    <Text
-      style={{
-        fontSize: 16,
-        fontWeight: 'bold',
-        color: '#B91C1C',
-        marginTop: 12,
-      }}
-    >
-      Cần thanh toán: {money(inv.remaining_amount)}
-    </Text>
-
-    <Text
-      style={{
-        color: '#475569',
-        textAlign: 'center',
-        marginTop: 8,
-      }}
-    >
-      Nội dung chuyển khoản: {inv.invoice_code}
-    </Text>
-
-    <Pressable
-      onPress={() => {
-        if (inv.vietqr_url) {
-          Linking.openURL(inv.vietqr_url).catch(() => {
-            Alert.alert('Thông báo', 'Không thể mở mã QR.');
-          });
-        }
-      }}
-      style={{
-        backgroundColor: '#15803D',
-        paddingVertical: 12,
-        paddingHorizontal: 20,
-        borderRadius: 10,
-        marginTop: 14,
-      }}
-    >
-      <Text style={{ color: '#FFFFFF', fontWeight: 'bold' }}>
-        Mở mã QR thanh toán
-      </Text>
-    </Pressable>
-  </View>
-)}
-
-              </View>
-            ))}
-
-            {!invoices.length && !busy && (
-              <Text style={styles.emptyText}>Chưa có hóa đơn nào trong lịch sử.</Text>
-            )}
-          </>
-        )}
-
-        {/* ================= TAB 3: BÁO SỬA CHỮA ================= */}
-        {page === 'maintenance' && (
-          <>
-            <Text style={styles.blockTitle}>🛠️ Gửi yêu cầu sửa chữa / bảo trì</Text>
-
-            <View style={styles.premiumCard}>
-              <Text style={styles.fieldLabel}>Tiêu đề sự cố</Text>
-              <TextInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Ví dụ: Rò rỉ vòi nước, điều hòa không mát..."
-                placeholderTextColor="#94A3B8"
-                style={styles.textInputRegular}
-              />
-
-              <Text style={styles.fieldLabel}>Mức độ ưu tiên</Text>
-              <View style={styles.priorityRow}>
-                {(['low', 'medium', 'high'] as const).map((p) => (
-                  <Pressable
-                    key={p}
-                    onPress={() => setPriority(p)}
-                    style={[styles.priorityBtn, priority === p && styles.priorityBtnActive]}
-                  >
-                    <Text
-                      style={[
-                        styles.priorityBtnText,
-                        priority === p && styles.priorityBtnTextActive
-                      ]}
-                    >
-                      {p === 'low' ? 'Thấp' : p === 'medium' ? 'Bình thường' : 'Khẩn cấp 🚨'}
+                  {isAdmin && (
+                    <Text style={{ fontSize: 11, color: '#2563EB', marginTop: 8 }}>
+                      Chạm để xử lý ➔
                     </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              <Text style={styles.fieldLabel}>Mô tả chi tiết sự cố</Text>
-              <TextInput
-                value={description}
-                onChangeText={setDescription}
-                multiline
-                textAlignVertical="top"
-                placeholder="Mô tả cụ thể vị trí và tình trạng hư hỏng để chủ trọ kịp thời xử lý..."
-                placeholderTextColor="#94A3B8"
-                style={[styles.textInputRegular, { height: 90 }]}
-              />
-
-              <Pressable
-                style={[styles.primaryBtn, busy && styles.disabledBtn]}
-                onPress={sendRequest}
-                disabled={busy}
-              >
-                <Text style={styles.primaryBtnText}>GỬI YÊU CẦU SỬA CHỮA</Text>
+                  )}
+                </View>
               </Pressable>
-            </View>
-
-            <Text style={[styles.blockTitle, { marginTop: 18 }]}>📋 Các yêu cầu đã gửi</Text>
-            
-{requests.map((r) => (
-  <View key={r.id} style={styles.itemRowCard}>
-    <View style={{ flex: 1 }}>
-      <Text style={styles.itemRowTitle}>
-        {r.title}
-      </Text>
-
-      <Text style={styles.itemRowMuted}>
-        {r.description}
-      </Text>
-
-      {r.admin_notes ? (
-        <Text style={styles.itemRowMuted}>
-          Ghi chú quản trị: {r.admin_notes}
-        </Text>
-      ) : null}
-    </View>
-  </View>
-))}
+            ))}
 
             {!requests.length && !busy && (
-              <Text style={styles.emptyText}>Bạn chưa gửi yêu cầu sửa chữa nào.</Text>
+              <Text style={styles.emptyText}>Chưa có sự cố nào được báo cáo.</Text>
             )}
           </>
         )}
 
-        {/* ================= TAB 4: THÔNG BÁO ================= */}
-        {page === 'notifications' && (
-          <>
-            <Text style={[styles.blockTitle, { marginTop: 18 }]}>📢 Thông báo mới</Text>
-            {(dashboard?.notifications || []).map((n: AnyObj) => (
-              <View key={n.id} style={styles.itemRowCard}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.itemRowTitle}>{n.title}</Text>
-                  <Text style={styles.itemRowMuted}>{n.content}</Text>
-                  <Text style={styles.dateStamp}>🕒 {n.created_at}</Text>
-                </View>
-              </View>
-            ))}
-            {!dashboard?.notifications?.length && (
-              <Text style={styles.emptyText}>Hiện chưa có thông báo mới.</Text>
-            )} 
-          </>
+        {/* ============================================================== */}
+        {/* TAB 4: PHÒNG TRỌ (CHỦ TRỌ / ADMIN)                              */}
+        {/* ============================================================== */}
+        {page === 'rooms' && isAdmin && (
+          <RoomsView isAdmin={isAdmin} />
         )}
 
-        {/* ================= TAB 5: CÀI ĐẶT & MÁY CHỦ ================= */}
+        {/* ============================================================== */}
+        {/* TAB 5: TIỆN ÍCH & CÀI ĐẶT                                       */}
+        {/* ============================================================== */}
         {page === 'settings' && (
           <>
-            <Text style={styles.blockTitle}>⚙️ Tài khoản & Cấu hình máy chủ</Text>
+            <Text style={styles.blockTitle}>⚙️ Tiện ích & Kiểm thử hệ thống</Text>
 
-            {/* Thông tin khách thuê */}
             <View style={styles.premiumCard}>
-              <Text style={styles.cardHeaderTitle}>Hồ sơ khách thuê</Text>
+              <Text style={{ fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 12 }}>
+                🔔 Push Notification & Realtime Socket.IO
+              </Text>
+
+              <View style={styles.settingRow}>
+                <Text style={styles.settingLabel}>Trạng thái Realtime:</Text>
+                <Text style={[styles.settingVal, { color: socketStatus === 'connected' ? '#16A34A' : '#DC2626' }]}>
+                  {socketStatus === 'connected' ? 'Đã kết nối (Online)' : socketStatus === 'connecting' ? 'Đang kết nối' : 'Mất kết nối'}
+                </Text>
+              </View>
+
+              <View style={styles.settingRow}>
+                <Text style={styles.settingLabel}>Máy chủ Realtime:</Text>
+                <Text style={styles.settingVal}>{getRealtimeUrlFromApiBase(apiBase)}</Text>
+              </View>
+
+              <View style={styles.settingRow}>
+                <Text style={styles.settingLabel}>Expo Push Token:</Text>
+                <Text style={[styles.settingVal, { fontSize: 11 }]} numberOfLines={1}>
+                  {pushToken || 'Chưa đăng ký token'}
+                </Text>
+              </View>
+
               <View style={styles.divider} />
-              <View style={styles.feeRow}>
-                <Text style={styles.feeLabel}>Họ và tên:</Text>
-                <Text style={styles.boldText}>
-                  {dashboard?.tenant?.fullname || user?.fullname || '-'}
-                </Text>
-              </View>
-              <View style={styles.feeRow}>
-                <Text style={styles.feeLabel}>Số điện thoại:</Text>
-                <Text style={styles.boldText}>
-                  {dashboard?.tenant?.phone || user?.phone || '-'}
-                </Text>
-              </View>
-              <View style={styles.feeRow}>
-                <Text style={styles.feeLabel}>Tài khoản đăng nhập:</Text>
-                <Text style={styles.boldText}>{user?.username || '-'}</Text>
-              </View>
-              <View style={styles.feeRow}>
-                <Text style={styles.feeLabel}>Email:</Text>
-                <Text style={styles.boldText}>{user?.email || '-'}</Text>
-              </View>
+
+              {/* Nút kiểm thử Notification cục bộ (Section 5.6) */}
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: '#0284C7', marginBottom: 10 }]}
+                onPress={handleTestLocalReminder}
+              >
+                <Text style={styles.primaryBtnText}>🔔 Thử thông báo cục bộ hẹn giờ (5s)</Text>
+              </TouchableOpacity>
+
+              {/* Nút đổi cấu hình IP */}
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: '#475569' }]}
+                onPress={() => setServerModalVisible(true)}
+              >
+                <Text style={styles.primaryBtnText}>🌐 Cấu hình địa chỉ IP máy chủ</Text>
+              </TouchableOpacity>
             </View>
-
-            
-
-            {/* Nút đăng xuất */}
-            <Pressable style={styles.dangerBtn} onPress={logout}>
-              <Text style={styles.dangerBtnText}>🚪 ĐĂNG XUẤT KHỎI ỨNG DỤNG</Text>
-            </Pressable>
           </>
         )}
-
-        <Text style={styles.appFooter}>
-          Hệ Thống Quản Lý Phòng Trọ · Chạy trên Android & iOS (Expo Go)
-        </Text>
       </ScrollView>
 
-      {/* Modal đổi IP dùng chung khi đã đăng nhập */}
+      {/* Modal Cập nhật trạng thái sự cố (Admin) */}
       <Modal
-        visible={serverModalVisible}
+        visible={incidentModalVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => setServerModalVisible(false)}
+        animationType="slide"
+        onRequestClose={() => setIncidentModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>⚙️ Cấu hình máy chủ API</Text>
-            <Text style={styles.modalSub}>Nhập địa chỉ máy tính chạy WAMP:</Text>
+          <View style={[styles.modalCard, { maxHeight: '90%' }]}>
+            <Text style={styles.modalTitle}>🛠️ Cập nhật tiến độ xử lý sự cố</Text>
+            {selectedIncident && (
+              <Text style={{ fontSize: 13, color: '#2563EB', fontWeight: '600', marginBottom: 12 }}>
+                Sự cố: {selectedIncident.request_code} · {selectedIncident.title}
+              </Text>
+            )}
+
+            <Text style={styles.fieldLabel}>Chọn trạng thái mới</Text>
+            <View style={styles.priorityRow}>
+              {[
+                ['pending', 'Chờ tiếp nhận'],
+                ['in_progress', 'Đang xử lý'],
+                ['completed', 'Đã hoàn thành'],
+                ['rejected', 'Từ chối']
+              ].map(([st, lbl]) => (
+                <Pressable
+                  key={st}
+                  onPress={() => setIncidentStatus(st as any)}
+                  style={[styles.priorityBtn, incidentStatus === st && styles.priorityBtnActive]}
+                >
+                  <Text style={[styles.priorityBtnText, incidentStatus === st && styles.priorityBtnTextActive]}>
+                    {lbl}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Ghi chú cho khách thuê</Text>
             <TextInput
-              value={tempIpInput}
-              onChangeText={setTempIpInput}
-              autoCapitalize="none"
-              autoCorrect={false}
+              value={incidentNotes}
+              onChangeText={setIncidentNotes}
+              multiline
+              textAlignVertical="top"
+              placeholder="Ví dụ: Đã cho thợ qua kiểm tra và thay mới dây cấp nước..."
+              style={[styles.modalInput, { height: 70 }]}
+            />
+
+            <Text style={styles.fieldLabel}>Chi phí sửa chữa (VNĐ nếu có)</Text>
+            <TextInput
+              value={incidentCost}
+              onChangeText={setIncidentCost}
+              keyboardType="numeric"
+              placeholder="0"
               style={styles.modalInput}
             />
+
             <View style={styles.modalActions}>
-              <Pressable
-                style={[styles.modalBtn, styles.modalBtnTest]}
-                onPress={() => checkServerHealth(tempIpInput)}
-              >
-                <Text style={styles.modalBtnTestText}>Thử kết nối</Text>
+              <Pressable style={[styles.modalBtn, styles.modalBtnSave]} onPress={handleUpdateIncident}>
+                <Text style={styles.modalBtnSaveText}>Lưu & Gửi Thông Báo</Text>
               </Pressable>
-              <Pressable style={[styles.modalBtn, styles.modalBtnSave]} onPress={saveServerIp}>
-                <Text style={styles.modalBtnSaveText}>Lưu & Áp dụng</Text>
+              <Pressable style={[styles.modalBtn, styles.modalBtnTest]} onPress={() => setIncidentModalVisible(false)}>
+                <Text style={styles.modalBtnTestText}>Hủy</Text>
               </Pressable>
             </View>
-            <Pressable style={styles.modalCloseBtn} onPress={() => setServerModalVisible(false)}>
-              <Text style={styles.modalCloseText}>Đóng</Text>
-            </Pressable>
           </View>
         </View>
       </Modal>
@@ -1138,789 +1406,172 @@ export default function HomeScreen() {
   );
 }
 
-// ==========================================
-// ĐỊNH DẠNG PHONG CÁCH (STYLESHEET)
-// ==========================================
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: '#F8FAFC'
-  },
-  keyboardWrap: {
-    flex: 1
-  },
-  loginScroll: {
-    padding: 20,
-    paddingBottom: 40
-  },
-
-  // Thanh trạng thái máy chủ trên cùng
+  safe: { flex: 1, backgroundColor: '#F8FAFC' },
   serverStatusBar: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 9,
+    justifyContent: 'space-between',
     borderBottomWidth: 1
   },
-  serverStatusOk: {
-    backgroundColor: '#ECFDF5',
-    borderBottomColor: '#A7F3D0'
-  },
-  serverStatusErr: {
-    backgroundColor: '#FEF2F2',
-    borderBottomColor: '#FECACA'
-  },
-  serverStatusPending: {
-    backgroundColor: '#FFFBEB',
-    borderBottomColor: '#FDE68A'
-  },
-  serverStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#10B981',
-    marginRight: 8
-  },
-  serverStatusText: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1E293B'
-  },
-  serverChangeBtn: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#2563EB',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 6
-  },
+  serverStatusOk: { backgroundColor: '#F0FDF4', borderBottomColor: '#BBF7D0' },
+  serverStatusErr: { backgroundColor: '#FEF2F2', borderBottomColor: '#FECACA' },
+  serverStatusPending: { backgroundColor: '#FFFBEB', borderBottomColor: '#FDE68A' },
+  serverStatusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981', marginRight: 6 },
+  serverStatusText: { fontSize: 12, fontWeight: '600', color: '#1E293B', flex: 1 },
+  serverChangeBtn: { fontSize: 11, fontWeight: '700', color: '#2563EB', marginLeft: 8 },
 
-  // Header thương hiệu
-  brandHeader: {
-    alignItems: 'center',
-    marginTop: 10,
-    marginBottom: 20
-  },
-  logoBadge: {
-    width: 68,
-    height: 68,
-    borderRadius: 20,
-    backgroundColor: '#2563EB',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
-    shadowRadius: 12,
-    elevation: 4
-  },
-  logoIcon: {
-    fontSize: 34
-  },
-  brandTitle: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: '#0F172A',
-    letterSpacing: 0.8
-  },
-  brandSub: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 4,
-    fontWeight: '500'
-  },
+  keyboardWrap: { flex: 1 },
+  loginScroll: { padding: 20, paddingBottom: 40, alignItems: 'center' },
+  brandHeader: { alignItems: 'center', marginVertical: 20 },
+  logoBadge: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  logoIcon: { fontSize: 32 },
+  brandTitle: { fontSize: 22, fontWeight: '800', color: '#0F172A', letterSpacing: 0.5 },
+  brandSub: { fontSize: 13, color: '#64748B', marginTop: 4 },
 
-  // Hộp đăng nhập
-  loginCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#E2E8F0'
-  },
-  roleTabs: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 16
-  },
-  roleTab: {
-    flex: 1,
-    paddingVertical: 9,
-    alignItems: 'center',
-    borderRadius: 9
-  },
-  roleTabActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 1
-  },
-  roleTabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B'
-  },
-  roleTabTextActive: {
-    color: '#0F172A',
-    fontWeight: '700'
-  },
-  loginCardHeading: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A'
-  },
-  loginCardMuted: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 4,
-    marginBottom: 16,
-    lineHeight: 18
-  },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
-    marginTop: 10,
-    marginBottom: 6
-  },
-  inputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    paddingHorizontal: 12
-  },
-  inputIcon: {
-    fontSize: 16,
-    marginRight: 8
-  },
-  textInput: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: '#0F172A'
-  },
-  textInputRegular: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: '#0F172A'
-  },
-  eyeBtn: {
-    padding: 6
-  },
-  eyeBtnText: {
-    fontSize: 16
-  },
-  primaryBtn: {
-    backgroundColor: '#2563EB',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 18,
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 2
-  },
-  primaryBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 14,
-    letterSpacing: 0.5
-  },
-  disabledBtn: {
-    opacity: 0.6
-  },
+  loginCard: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 10, elevation: 3, borderWidth: 1, borderColor: '#E2E8F0' },
+  roleTabs: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4, marginBottom: 16 },
+  roleTab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 10 },
+  roleTabActive: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  roleTabText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
+  roleTabTextActive: { color: '#0F172A', fontWeight: '700' },
+  loginCardHeading: { fontSize: 17, fontWeight: '700', color: '#0F172A', marginBottom: 4 },
+  loginCardMuted: { fontSize: 13, color: '#64748B', marginBottom: 16, lineHeight: 18 },
 
-  // Khu vực khách thuê mẫu
-  quickBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
-    padding: 12,
-    marginTop: 18,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderStyle: 'dashed'
-  },
-  quickTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8
-  },
-  quickList: {
-    gap: 8
-  },
-  quickChip: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  quickChipName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B'
-  },
-  quickChipPhone: {
-    fontSize: 12,
-    color: '#2563EB',
-    fontWeight: '600'
-  },
-  quickHint: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 8,
-    fontStyle: 'italic'
-  },
+  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#334155', marginBottom: 6, marginTop: 10 },
+  inputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 12, paddingHorizontal: 12, height: 48 },
+  inputIcon: { fontSize: 16, marginRight: 8 },
+  textInput: { flex: 1, fontSize: 14, color: '#0F172A' },
+  textInputRegular: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#0F172A', marginBottom: 8 },
+  eyeBtn: { padding: 6 },
+  eyeBtnText: { fontSize: 16 },
 
-  // Hướng dẫn chạy trên iPhone
-  iosHelpCard: {
-    backgroundColor: '#EFF6FF',
-    borderRadius: 14,
-    padding: 14,
-    marginTop: 16,
-    borderWidth: 1,
-    borderColor: '#BFDBFE'
-  },
-  iosHelpTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E3A8A',
-    marginBottom: 6
-  },
-  iosHelpItem: {
-    fontSize: 12,
-    color: '#1E40AF',
-    lineHeight: 18,
-    marginTop: 3
-  },
-  boldText: {
-    fontWeight: '700',
-    color: '#0F172A'
-  },
+  primaryBtn: { backgroundColor: '#2563EB', height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginTop: 16 },
+  primaryBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', letterSpacing: 0.5 },
+  disabledBtn: { opacity: 0.6 },
 
-  // Modal đổi IP
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
-    justifyContent: 'center',
-    padding: 20
-  },
-  modalCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 6
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0F172A'
-  },
-  modalSub: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 4,
-    marginBottom: 12
-  },
-  modalInput: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 13,
-    color: '#0F172A'
-  },
-  presetWrap: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-    flexWrap: 'wrap'
-  },
-  presetBtn: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8
-  },
-  presetText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#475569'
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18
-  },
-  modalBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center'
-  },
-  modalBtnTest: {
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE'
-  },
-  modalBtnTestText: {
-    color: '#2563EB',
-    fontWeight: '700',
-    fontSize: 13
-  },
-  modalBtnSave: {
-    backgroundColor: '#2563EB'
-  },
-  modalBtnSaveText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 13
-  },
-  modalCloseBtn: {
-    alignItems: 'center',
-    marginTop: 12,
-    paddingVertical: 8
-  },
-  modalCloseText: {
-    color: '#64748B',
-    fontWeight: '600',
-    fontSize: 13
-  },
+  quickBox: { marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  quickTitle: { fontSize: 12, fontWeight: '700', color: '#475569', marginBottom: 8 },
+  quickList: { gap: 8 },
+  quickChip: { backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  quickChipName: { fontSize: 13, fontWeight: '600', color: '#1E293B' },
+  quickChipPhone: { fontSize: 11, color: '#64748B', marginTop: 2 },
 
-  // ==========================================
-  // STYLES CHO TENANT PORTAL (LOGGED IN)
-  // ==========================================
-  appHeader: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between'
-  },
-  appHeaderSmall: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#94A3B8',
-    letterSpacing: 1
-  },
-  appHeaderTitle: {
-    fontSize: 19,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginTop: 4
-  },
-  appHeaderRoom: {
-    fontSize: 12,
-    color: '#38BDF8',
-    marginTop: 2,
-    fontWeight: '600'
-  },
-  logoutBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8
-  },
-  logoutBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700'
-  },
+  // Post-login styles
+  appHeader: { backgroundColor: '#0F172A', paddingHorizontal: 18, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  appHeaderSmall: { fontSize: 10, fontWeight: '800', color: '#94A3B8', letterSpacing: 1 },
+  appHeaderTitle: { fontSize: 17, fontWeight: '700', color: '#FFFFFF', marginTop: 2 },
+  appHeaderRoom: { fontSize: 12, color: '#38BDF8', marginTop: 2 },
+  logoutBtn: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  logoutBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '600' },
 
-  topTabBar: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginTop: -12,
-    borderRadius: 14,
-    padding: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3
-  },
-  topTabItem: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderRadius: 10
-  },
-  topTabItemActive: {
-    backgroundColor: '#EFF6FF'
-  },
-  topTabIcon: {
-    fontSize: 18,
-    marginBottom: 2
-  },
-  topTabText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748B'
-  },
-  topTabTextActive: {
-    color: '#2563EB',
-    fontWeight: '700'
-  },
+  socketBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  socketOk: { backgroundColor: '#064E3B' },
+  socketConnecting: { backgroundColor: '#78350F' },
+  socketErr: { backgroundColor: '#7F1D1D' },
+  socketText: { fontSize: 9, fontWeight: '700', color: '#FFFFFF' },
 
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40
-  },
-  welcomeHero: {
-    backgroundColor: '#DBEAFE',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16
-  },
-  heroGreeting: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#1E3A8A'
-  },
-  heroDesc: {
-    fontSize: 13,
-    color: '#1D4ED8',
-    marginTop: 4,
-    lineHeight: 18
-  },
+  realtimeBanner: { backgroundColor: '#EFF6FF', paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#BFDBFE' },
+  realtimeBannerText: { fontSize: 12, color: '#1E40AF', fontWeight: '600' },
 
-  blockTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
-    marginBottom: 10
-  },
-  tabSubDesc: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 14
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 16,
-    marginBottom: 10
-  },
-  seeMoreLink: {
-    fontSize: 13,
-    color: '#2563EB',
-    fontWeight: '700'
-  },
+  topTabBar: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', paddingHorizontal: 6 },
+  topTabItem: { flex: 1, paddingVertical: 10, alignItems: 'center' },
+  topTabItemActive: { borderBottomWidth: 2, borderBottomColor: '#2563EB' },
+  topTabIcon: { fontSize: 16, marginBottom: 2 },
+  topTabText: { fontSize: 11, fontWeight: '600', color: '#64748B' },
+  topTabTextActive: { color: '#2563EB', fontWeight: '700' },
 
-  // Thẻ thông tin Card cao cấp
-  premiumCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1
-  },
-  cardHeaderTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A'
-  },
-  roomHeadRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  roomHeaderName: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#1E293B'
-  },
-  activeTag: {
-    backgroundColor: '#ECFDF5',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6
-  },
-  activeTagText: {
-    color: '#059669',
-    fontSize: 11,
-    fontWeight: '700'
-  },
-  cardMuted: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 4
-  },
-  cardAddress: {
-    fontSize: 13,
-    color: '#475569',
-    marginTop: 4
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#F1F5F9',
-    marginVertical: 10
-  },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    marginBottom: 8
-  },
-  priceLabel: {
-    fontSize: 13,
-    color: '#64748B',
-    marginRight: 6
-  },
-  priceHighlight: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0D9488'
-  },
-  priceUnit: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '400'
-  },
-  infoGrid: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 6
-  },
-  infoCol: {
-    flex: 1
-  },
-  infoKey: {
-    fontSize: 11,
-    color: '#94A3B8'
-  },
-  infoVal: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1E293B',
-    marginTop: 2
-  },
+  scrollContent: { padding: 16, paddingBottom: 40 },
+  welcomeHero: { backgroundColor: '#1E293B', padding: 16, borderRadius: 16, marginBottom: 16 },
+  welcomeHeroAdmin: { backgroundColor: '#0F172A', padding: 16, borderRadius: 16, marginBottom: 16 },
+  heroGreeting: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  heroDesc: { fontSize: 12, color: '#94A3B8', marginTop: 4, lineHeight: 16 },
 
-  // Hàng danh sách thu nhỏ
-  itemRowCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1
-  },
-  itemRowTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A'
-  },
-  itemRowMuted: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 3
-  },
-  itemRowSub: {
-    fontSize: 12,
-    color: '#475569',
-    marginTop: 2
-  },
-  boldDanger: {
-    fontWeight: '700',
-    color: '#E11D48'
-  },
-  dateStamp: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 4
-  },
-  adminNotes: {
-    fontSize: 12,
-    color: '#2563EB',
-    backgroundColor: '#EFF6FF',
-    padding: 6,
-    borderRadius: 6,
-    marginTop: 4
-  },
+  blockTitle: { fontSize: 16, fontWeight: '700', color: '#0F172A', marginBottom: 10 },
+  tabSubDesc: { fontSize: 13, color: '#64748B', marginBottom: 14, lineHeight: 18 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, marginBottom: 10 },
+  seeMoreLink: { fontSize: 12, color: '#2563EB', fontWeight: '600' },
 
-  // Huy hiệu trạng thái
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8
-  },
-  badgeGreen: {
-    backgroundColor: '#DCFCE7'
-  },
-  badgeTextGreen: {
-    color: '#15803D'
-  },
-  badgeOrange: {
-    backgroundColor: '#FEF3C7'
-  },
-  badgeTextOrange: {
-    color: '#B45309'
-  },
-  badgeBlue: {
-    backgroundColor: '#DBEAFE'
-  },
-  badgeTextBlue: {
-    color: '#1D4ED8'
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '700'
-  },
+  // Stats Grid for Admin
+  statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
+  statCard: { width: '48%', backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', borderLeftWidth: 4 },
+  statVal: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
+  statLabel: { fontSize: 12, color: '#64748B', marginTop: 2 },
 
-  // Phí chi tiết hóa đơn
-  invoiceCode: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1E293B'
-  },
-  billingMonth: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 2
-  },
-  feeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 4
-  },
-  feeLabel: {
-    fontSize: 13,
-    color: '#64748B'
-  },
-  feeVal: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1E293B'
-  },
-  totalHighlight: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0D9488'
-  },
-  paidHighlight: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#059669'
-  },
-  dueDateStamp: {
-    fontSize: 12,
-    color: '#E11D48',
-    fontWeight: '600',
-    marginTop: 6
-  },
+  cronActionBtn: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#86EFAC', padding: 12, borderRadius: 10, alignItems: 'center' },
+  cronActionText: { fontSize: 13, fontWeight: '700', color: '#166534' },
 
-  // Nút ưu tiên sửa chữa
-  priorityRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10
-  },
-  priorityBtn: {
-    flex: 1,
-    paddingVertical: 9,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    alignItems: 'center'
-  },
-  priorityBtnActive: {
-    backgroundColor: '#DBEAFE',
-    borderWidth: 1,
-    borderColor: '#93C5FD'
-  },
-  priorityBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B'
-  },
-  priorityBtnTextActive: {
-    color: '#1D4ED8',
-    fontWeight: '700'
-  },
+  premiumCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
+  roomHeadRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  roomHeaderName: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
+  activeTag: { backgroundColor: '#DCFCE7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  activeTagText: { fontSize: 11, fontWeight: '700', color: '#15803D' },
+  cardMuted: { fontSize: 13, color: '#64748B', marginTop: 4 },
+  cardAddress: { fontSize: 12, color: '#475569', marginTop: 2 },
+  divider: { height: 1, backgroundColor: '#F1F5F9', marginVertical: 10 },
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+  priceLabel: { fontSize: 13, color: '#64748B' },
+  priceHighlight: { fontSize: 18, fontWeight: '800', color: '#2563EB' },
+  priceUnit: { fontSize: 12, fontWeight: 'normal', color: '#64748B' },
 
-  // Cài đặt
-  currentApiText: {
-    fontSize: 12,
-    color: '#2563EB',
-    backgroundColor: '#F8FAFC',
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
-  },
-  dangerBtn: {
-    backgroundColor: '#FFE4E6',
-    borderWidth: 1,
-    borderColor: '#FECDD3',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 10
-  },
-  dangerBtnText: {
-    color: '#E11D48',
-    fontWeight: '800',
-    fontSize: 13
-  },
+  itemRowCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'space-between' },
+  itemRowTitle: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
+  itemRowMuted: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  itemRowSub: { fontSize: 12, color: '#475569', marginTop: 2 },
+  boldDanger: { fontWeight: '700', color: '#DC2626' },
+  dateStamp: { fontSize: 11, color: '#94A3B8', marginTop: 4 },
 
-  emptyText: {
-    fontSize: 13,
-    color: '#94A3B8',
-    textAlign: 'center',
-    paddingVertical: 16
-  },
-  appFooter: {
-    fontSize: 11,
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 20
-  }
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  badgeGreen: { backgroundColor: '#DCFCE7' },
+  badgeBlue: { backgroundColor: '#DBEAFE' },
+  badgeOrange: { backgroundColor: '#FFEDD5' },
+  badgeRed: { backgroundColor: '#FEE2E2' },
+  badgeText: { fontSize: 11, fontWeight: '700', color: '#334155' },
+
+  invoiceCode: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  billingMonth: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  feeRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
+  feeLabel: { fontSize: 13, color: '#64748B' },
+  feeVal: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+  boldText: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  totalHighlight: { fontSize: 15, fontWeight: '800', color: '#2563EB' },
+  paidHighlight: { fontSize: 14, fontWeight: '600', color: '#16A34A' },
+  dueDateStamp: { fontSize: 11, color: '#D97706', marginTop: 8, fontWeight: '600' },
+
+  qrBox: { marginTop: 12, padding: 14, backgroundColor: '#F0FDF4', borderRadius: 12, borderWidth: 1, borderColor: '#BBF7D0', alignItems: 'center' },
+  qrTitle: { fontSize: 14, fontWeight: '700', color: '#166534', marginBottom: 8 },
+  qrAmount: { fontSize: 14, fontWeight: '700', color: '#DC2626', marginTop: 8 },
+  qrDesc: { fontSize: 11, color: '#64748B', marginTop: 2 },
+
+  priorityRow: { flexDirection: 'row', gap: 6, marginBottom: 8 },
+  priorityBtn: { flex: 1, paddingVertical: 8, backgroundColor: '#F1F5F9', borderRadius: 8, alignItems: 'center' },
+  priorityBtnActive: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#2563EB' },
+  priorityBtnText: { fontSize: 11, fontWeight: '600', color: '#64748B' },
+  priorityBtnTextActive: { color: '#2563EB', fontWeight: '700' },
+
+  settingRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  settingLabel: { fontSize: 13, color: '#64748B' },
+  settingVal: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+
+  emptyText: { textAlign: 'center', color: '#94A3B8', marginVertical: 20, fontSize: 13 },
+
+  // Modals
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
+  modalCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 20 },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
+  modalSub: { fontSize: 12, color: '#64748B', marginBottom: 14, lineHeight: 16 },
+  modalInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, padding: 10, fontSize: 13, color: '#0F172A', marginBottom: 10 },
+  presetWrap: { gap: 6, marginVertical: 8 },
+  presetBtn: { backgroundColor: '#F1F5F9', padding: 8, borderRadius: 8 },
+  presetText: { fontSize: 11, color: '#2563EB', fontWeight: '600' },
+  modalActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  modalBtn: { flex: 1, height: 42, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  modalBtnTest: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' },
+  modalBtnTestText: { color: '#2563EB', fontWeight: '600', fontSize: 13 },
+  modalBtnSave: { backgroundColor: '#2563EB' },
+  modalBtnSaveText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  modalCloseBtn: { alignSelf: 'center', marginTop: 12 },
+  modalCloseText: { color: '#64748B', fontSize: 13, fontWeight: '600' }
 });

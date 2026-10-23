@@ -1,0 +1,15 @@
+{
+  "name": "realtime-server",
+  "version": "1.0.0",
+  "description": "Realtime Socket.IO service for QuanLyPhongTro",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.4"
+  }
+}

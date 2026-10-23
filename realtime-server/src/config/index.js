@@ -1,0 +1,7 @@
+module.exports = {
+  PORT: process.env.PORT || 3001,
+  HOST: process.env.HOST || '0.0.0.0',
+  API_SECRET: process.env.QLPT_API_SECRET || 'QLPT-ExpoGo-2026-LOCAL-DEMO-SECRET-CHANGE-ME',
+  REALTIME_INTERNAL_SECRET: process.env.QLPT_REALTIME_SECRET || 'QLPT-REALTIME-SECRET-2026',
+  CORS_ORIGIN: '*'
+};

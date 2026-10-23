@@ -288,11 +288,29 @@ class Invoice extends Model
             ];
 
             try {
-                $this->createInvoiceWithDetails($invoiceData, $details);
+                $createdInvId = $this->createInvoiceWithDetails($invoiceData, $details);
                 $successCount++;
+
+                \App\Helpers\PushNotification::createAndSend(
+                    'Hóa đơn tháng mới',
+                    "Bạn có hóa đơn tiền phòng mới kỳ {$billingMonth} với tổng số tiền " . format_currency($totalAmount) . ". Vui lòng kiểm tra và thanh toán trước ngày {$dueDate}.",
+                    'payment',
+                    (int)$c['tenant_id'],
+                    null,
+                    'invoice',
+                    $createdInvId,
+                    [
+                        'invoice_id'    => $createdInvId,
+                        'billing_month' => $billingMonth,
+                        'total_amount'  => $totalAmount,
+                        'due_date'      => $dueDate,
+                        'type'          => 'new_invoice'
+                    ]
+                );
             } catch (Exception $e) {
                 // Tiếp tục xử lý các hợp đồng khác
             }
+
         }
 
         return ['success' => $successCount, 'skipped' => $skippedCount];
