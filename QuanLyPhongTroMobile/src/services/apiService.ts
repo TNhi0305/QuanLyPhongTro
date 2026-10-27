@@ -1,11 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Current machine Wi-Fi LAN IP (Port 8080 for Apache WAMP)
-export const DEFAULT_API_BASE = 'http://172.23.4.219:8080/QuanLyPhongTro/api/';
+export const DEFAULT_API_BASE = 'http://192.168.100.36:8080/QuanLyPhongTro/api/';
 
 /**
  * Extract the hostname from the configured API base URL and construct the Socket.IO URL (Port 3001).
- * E.g., "http://172.23.4.219:8080/QuanLyPhongTro/api/" -> "http://172.23.4.219:3001"
+ * E.g., "http://192.168.100.36:8080/QuanLyPhongTro/api/" -> "http://192.168.100.36:3001"
  */
 export function getRealtimeUrlFromApiBase(apiBase: string): string {
   try {
@@ -17,7 +17,7 @@ export function getRealtimeUrlFromApiBase(apiBase: string): string {
   } catch (e) {
     // fallback
   }
-  return 'http://172.23.4.219:3001';
+  return 'http://192.168.100.36:3001';
 }
 
 /**

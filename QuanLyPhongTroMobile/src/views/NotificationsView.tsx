@@ -80,13 +80,18 @@ export default function NotificationsView({
     const id = await scheduleLocalReminder({
       title: '⏰ Nhắc nhở kiểm tra hóa đơn tiền phòng',
       body: 'Đã đến hạn kiểm tra chỉ số điện nước và thanh toán tiền phòng định kỳ!',
-      seconds: 5,
+      seconds: 1,
       data: { type: 'payment_reminder', reference_type: 'invoice' }
     });
 
     if (id) {
-      setScheduledMsg('Đã lên lịch thông báo cục bộ sau 5 giây! Hãy khóa màn hình hoặc chuyển app để kiểm tra.');
-      setTimeout(() => setScheduledMsg(null), 7000);
+      setScheduledMsg('🔔 Đã kích hoạt thông báo! Hãy xem thông báo nổi trên đầu màn hình hoặc thanh thông báo.');
+      setTimeout(() => setScheduledMsg(null), 6000);
+    } else {
+      Alert.alert(
+        'Không thể hiển thị thông báo',
+        'Vui lòng cấp quyền Thông báo cho ứng dụng Expo Go trong phần Cài đặt của thiết bị.'
+      );
     }
   };
 
@@ -178,7 +183,7 @@ export default function NotificationsView({
       {/* Nút test thông báo cục bộ lên lịch */}
       <Pressable style={styles.scheduleReminderBtn} onPress={handleTestScheduleReminder}>
         <Text style={styles.scheduleReminderBtnText}>
-          🔔 THỬ LÊN LỊCH THÔNG BÁO CỤC BỘ (5 GIÂY)
+          🔔 THỬ PHÁT THÔNG BÁO CỤC BỘ NGAY
         </Text>
       </Pressable>
 
@@ -220,7 +225,7 @@ export default function NotificationsView({
                   : 'Các thông báo mới về tiền phòng và bảo trì sẽ xuất hiện tại đây.'}
               </Text>
             </View>
-          ) : null
+          ) : undefined
         }
       />
 

@@ -535,18 +535,24 @@ export default function HomeScreen() {
     }
   };
 
-  // Thử thông báo cục bộ được lên lịch (5 giây)
+  // Thử thông báo cục bộ
   const handleTestLocalReminder = async () => {
     const notifId = await scheduleLocalReminder({
       title: '⏰ Nhắc nhở hạn tiền phòng (Thông báo cục bộ)',
-      body: 'Đây là thông báo nhắc nhở cục bộ được lên lịch sau 5 giây để kiểm tra tính năng thông báo của thiết bị.',
-      seconds: 5,
+      body: 'Đây là thông báo nhắc nhở cục bộ để kiểm tra tính năng thông báo của thiết bị.',
+      seconds: 1,
       data: { type: 'local_reminder' }
     });
     if (notifId) {
-      Alert.alert('Đã lên lịch thông báo cục bộ', 'Hệ thống đã hẹn giờ thông báo sau 5 giây. Bạn có thể ẩn app hoặc khóa màn hình để kiểm tra.');
+      Alert.alert(
+        '🔔 Đã kích hoạt thông báo cục bộ',
+        'Thông báo sẽ xuất hiện trên thanh thông báo đỉnh màn hình của bạn trong giây lát.'
+      );
     } else {
-      Alert.alert('Không thể đặt lịch', 'Chức năng thông báo cục bộ không được hỗ trợ trên môi trường web hoặc thiếu quyền.');
+      Alert.alert(
+        'Không thể kích hoạt thông báo',
+        'Vui lòng cấp quyền Thông báo cho ứng dụng Expo Go trong phần Cài đặt của thiết bị.'
+      );
     }
   };
 
@@ -590,7 +596,7 @@ export default function HomeScreen() {
   if (!token) {
     return (
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
-        <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
+        <StatusBar barStyle="dark-content" {...({ backgroundColor: '#F8FAFC' } as any)} />
 
         {/* Thanh trạng thái kết nối máy chủ WAMP */}
         <Pressable
@@ -785,15 +791,15 @@ export default function HomeScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 style={styles.modalInput}
-                placeholder="http://172.23.4.219:8080/QuanLyPhongTro/api/"
+                placeholder="http://192.168.100.36:8080/QuanLyPhongTro/api/"
               />
 
               <View style={styles.presetWrap}>
                 <Pressable
                   style={styles.presetBtn}
-                  onPress={() => setTempIpInput('http://172.23.4.219:8080/QuanLyPhongTro/api/')}
+                  onPress={() => setTempIpInput('http://192.168.100.36:8080/QuanLyPhongTro/api/')}
                 >
-                  <Text style={styles.presetText}>IP Wi-Fi (172.23.4.219:8080)</Text>
+                  <Text style={styles.presetText}>IP Wi-Fi (192.168.100.36:8080)</Text>
                 </Pressable>
                 <Pressable
                   style={styles.presetBtn}
@@ -897,7 +903,7 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
+      <StatusBar barStyle="light-content" {...({ backgroundColor: '#0F172A' } as any)} />
 
       {/* Top Header */}
       <View style={styles.appHeader}>
@@ -1321,7 +1327,7 @@ export default function HomeScreen() {
                 style={[styles.primaryBtn, { backgroundColor: '#0284C7', marginBottom: 10 }]}
                 onPress={handleTestLocalReminder}
               >
-                <Text style={styles.primaryBtnText}>🔔 Thử thông báo cục bộ hẹn giờ (5s)</Text>
+                <Text style={styles.primaryBtnText}>🔔 Thử thông báo cục bộ ngay</Text>
               </TouchableOpacity>
 
               {/* Nút đổi cấu hình IP */}

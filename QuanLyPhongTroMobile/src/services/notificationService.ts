@@ -3,16 +3,18 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
 // Configure foreground notification behavior
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-    priority: Notifications.AndroidNotificationPriority.MAX
-  }),
-});
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+      priority: Notifications.AndroidNotificationPriority?.MAX ?? 3
+    }),
+  });
+}
 
 
 export interface NotificationPayload {
@@ -90,23 +92,59 @@ export async function scheduleLocalReminder(params: {
   if (Platform.OS === 'web') return null;
 
   try {
+    // 1. Kiểm tra và xin quyền thông báo nếu chưa có
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+    if (finalStatus !== 'granted') {
+      console.warn('[LocalNotification] Quyền thông báo chưa được cấp bởi người dùng.');
+      return null;
+    }
+
+    // 2. Đảm bảo Notification Channel tồn tại trên Android với độ ưu tiên MAX
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Thông báo Quản lý phòng trọ',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#208AEF',
+        sound: 'default',
+        enableLights: true,
+        enableVibrate: true,
+        showBadge: true
+      });
+    }
+
+    // 3. Cấu hình trigger: nếu seconds > 0 thì lên lịch, còn 0 thì bắn ngay lập tức
+    const delaySeconds = typeof params.seconds === 'number' ? params.seconds : 1;
+    const trigger = delaySeconds > 0
+      ? {
+          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+          seconds: delaySeconds,
+          repeats: false,
+          channelId: 'default'
+        }
+      : {
+          channelId: 'default'
+        };
+
     const id = await Notifications.scheduleNotificationAsync({
       content: {
         title: params.title,
         body: params.body,
         data: params.data || {},
-        sound: 'default'
+        sound: 'default',
+        priority: Notifications.AndroidNotificationPriority?.MAX ?? 3
       },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-        seconds: params.seconds || 5,
-        repeats: false
-      }
+      trigger: trigger as any
     });
-    console.log(`[LocalNotification] Scheduled #${id} in ${params.seconds || 5}s`);
+    console.log(`[LocalNotification] Đã lên lịch #${id} sau ${delaySeconds}s`);
     return id;
   } catch (err) {
-    console.warn('[LocalNotification] Error scheduling:', err);
+    console.warn('[LocalNotification] Lỗi lên lịch thông báo:', err);
     return null;
   }
 }

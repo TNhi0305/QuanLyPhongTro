@@ -193,7 +193,7 @@ export default function RoomsView({ viewModel: externalVm, isAdmin = true }: Roo
                   : 'Hãy thêm phòng trọ đầu tiên của bạn.'}
               </Text>
             </View>
-          ) : null
+          ) : undefined
         }
       />
 

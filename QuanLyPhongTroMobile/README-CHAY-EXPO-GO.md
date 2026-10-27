@@ -32,12 +32,18 @@ Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **T
 
 1. Mở **Google Play Store (CH Play)** trên Android, tìm và cài đặt ứng dụng **Expo Go**.
 2. Kết nối Android vào **chung mạng Wi-Fi** với máy tính (hoặc bật Hotspot).
-3. Mở terminal tại `QuanLyPhongTroMobile` và chạy:
+3. Chạy máy chủ Realtime WebSocket và ứng dụng Expo:
 
-   ```powershell
-   cd C:\wamp64\www\QuanLyPhongTro\QuanLyPhongTroMobile
-   npx expo start --lan
-   ```
+   - **Terminal 1 (Realtime Server WebSocket):**
+     ```powershell
+     cd C:\wamp64\www\QuanLyPhongTro\realtime-server
+     npm start
+     ```
+   - **Terminal 2 (Expo Metro):**
+     ```powershell
+     cd C:\wamp64\www\QuanLyPhongTro\QuanLyPhongTroMobile
+     npx expo start -c
+     ```
 
 4. Mở app **Expo Go** trên Android -> Bấm **"Scan QR code"** ngay trong app -> Quét mã QR hiển thị ở terminal máy tính.
    - Hoặc chọn mục nhập link: `exp://192.168.100.36:8081`

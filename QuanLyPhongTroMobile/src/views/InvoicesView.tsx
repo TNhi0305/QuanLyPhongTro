@@ -225,7 +225,7 @@ export default function InvoicesView({ viewModel: externalVm, isAdmin = false }:
                   : 'Hiện tại chưa có hóa đơn phát sinh.'}
               </Text>
             </View>
-          ) : null
+          ) : undefined
         }
       />
 

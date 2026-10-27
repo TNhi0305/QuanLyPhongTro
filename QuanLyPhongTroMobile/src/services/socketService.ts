@@ -22,19 +22,33 @@ export function connectSocket(serverUrl: string, token: string): Socket {
 
   notifyStatus('connecting');
 
-  console.log(`[SocketService] Connecting to ${serverUrl} with auth token...`);
+  const cleanToken = (token || '').trim();
+  console.log(`[SocketService] Connecting to ${serverUrl} with WebSocket transport...`);
 
   socket = io(serverUrl, {
-    auth: { token },
-    transports: ['websocket', 'polling'],
+    auth: { token: cleanToken },
+    query: { token: cleanToken },
+    extraHeaders: {
+      Authorization: `Bearer ${cleanToken}`
+    },
+    transports: ['websocket'],
+    upgrade: false,
+    forceNew: true,
     reconnection: true,
-    reconnectionAttempts: 15,
-    reconnectionDelay: 2000,
-    timeout: 10000
+    reconnectionAttempts: 30,
+    reconnectionDelay: 1500,
+    reconnectionDelayMax: 5000,
+    timeout: 15000,
+    autoConnect: true
   });
 
   socket.on('connect', () => {
-    console.log('[SocketService] Connected! Socket ID:', socket?.id);
+    console.log('[SocketService] Connected successfully! Socket ID:', socket?.id);
+    notifyStatus('connected');
+  });
+
+  socket.on('reconnect', (attempt) => {
+    console.log(`[SocketService] Reconnected on attempt #${attempt}`);
     notifyStatus('connected');
   });
 
