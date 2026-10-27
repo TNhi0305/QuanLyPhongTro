@@ -13,7 +13,10 @@ import {
 } from 'react-native';
 import { NotificationItem } from '../models/types';
 import { useNotificationsViewModel, NotificationFilter } from '../viewmodels/useNotificationsViewModel';
-import { scheduleLocalReminder } from '../services/notificationService';
+import {
+  requiresNotificationDevelopmentBuild,
+  scheduleLocalReminder
+} from '../services/notificationService';
 
 interface NotificationsViewProps {
   viewModel?: ReturnType<typeof useNotificationsViewModel>;
@@ -90,7 +93,9 @@ export default function NotificationsView({
     } else {
       Alert.alert(
         'Không thể hiển thị thông báo',
-        'Vui lòng cấp quyền Thông báo cho ứng dụng Expo Go trong phần Cài đặt của thiết bị.'
+        requiresNotificationDevelopmentBuild()
+          ? 'Android Expo Go không hỗ trợ module thông báo đang dùng. Hãy chạy ứng dụng bằng development build để thử thông báo.'
+          : 'Vui lòng kiểm tra quyền thông báo trong phần Cài đặt của thiết bị.'
       );
     }
   };

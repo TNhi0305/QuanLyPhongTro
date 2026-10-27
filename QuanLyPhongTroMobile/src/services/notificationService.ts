@@ -1,21 +1,67 @@
-import * as Notifications from 'expo-notifications';
+import { isRunningInExpoGo } from 'expo';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
-// Configure foreground notification behavior
-if (Platform.OS !== 'web') {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-      priority: Notifications.AndroidNotificationPriority?.MAX ?? 3
-    }),
-  });
+type NotificationsModule = typeof import('expo-notifications');
+type Notification = import('expo-notifications').Notification;
+type NotificationResponse = import('expo-notifications').NotificationResponse;
+
+const isUnsupportedExpoGo = Platform.OS === 'android' && isRunningInExpoGo();
+let expoGoWarningShown = false;
+let notificationHandlerConfigured = false;
+
+function warnIfExpoGoUnsupported(): void {
+  if (isUnsupportedExpoGo && !expoGoWarningShown) {
+    console.warn(
+      '[Notifications] Android Expo Go lacks the required native module. Use a development build to enable notifications.'
+    );
+    expoGoWarningShown = true;
+  }
 }
 
+async function loadNotifications(): Promise<NotificationsModule | null> {
+  if (Platform.OS === 'web' || isUnsupportedExpoGo) {
+    warnIfExpoGoUnsupported();
+    return null;
+  }
+
+  let notifications: NotificationsModule;
+  try {
+    notifications = await import('expo-notifications');
+  } catch (error) {
+    console.warn('[Notifications] Failed to load the native notification module:', error);
+    return null;
+  }
+  if (!notificationHandlerConfigured) {
+    notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
+        priority: notifications.AndroidNotificationPriority?.MAX ?? 3
+      })
+    });
+    notificationHandlerConfigured = true;
+  }
+  return notifications;
+}
+
+export async function subscribeToNotificationEvents(
+  onReceived: (notification: Notification) => void,
+  onResponse: (response: NotificationResponse) => void
+): Promise<() => void> {
+  const notifications = await loadNotifications();
+  if (!notifications) return () => {};
+
+  const receivedSubscription = notifications.addNotificationReceivedListener(onReceived);
+  const responseSubscription = notifications.addNotificationResponseReceivedListener(onResponse);
+  return () => {
+    receivedSubscription.remove();
+    responseSubscription.remove();
+  };
+}
 
 export interface NotificationPayload {
   notification_id?: number | string;
@@ -27,11 +73,16 @@ export interface NotificationPayload {
   [key: string]: any;
 }
 
+export function requiresNotificationDevelopmentBuild(): boolean {
+  return isUnsupportedExpoGo;
+}
+
 /**
  * Register device for push notifications and get Expo Push Token.
  */
 export async function registerForPushNotificationsAsync(): Promise<string | null> {
-  if (Platform.OS === 'web') {
+  const Notifications = await loadNotifications();
+  if (!Notifications) {
     return null;
   }
 
@@ -89,7 +140,8 @@ export async function scheduleLocalReminder(params: {
   seconds?: number;
   data?: NotificationPayload;
 }): Promise<string | null> {
-  if (Platform.OS === 'web') return null;
+  const Notifications = await loadNotifications();
+  if (!Notifications) return null;
 
   try {
     // 1. Kiểm tra và xin quyền thông báo nếu chưa có
@@ -153,7 +205,9 @@ export async function scheduleLocalReminder(params: {
  * Cancel a scheduled local notification.
  */
 export async function cancelScheduledReminder(id: string): Promise<void> {
-  if (Platform.OS === 'web') return;
+  const Notifications = await loadNotifications();
+  if (!Notifications) return;
+
   try {
     await Notifications.cancelScheduledNotificationAsync(id);
   } catch (e) {
@@ -165,7 +219,8 @@ export async function cancelScheduledReminder(id: string): Promise<void> {
  * Check if the app was launched by tapping a notification (cold start / terminated state).
  */
 export async function checkInitialNotification(): Promise<NotificationPayload | null> {
-  if (Platform.OS === 'web') return null;
+  const Notifications = await loadNotifications();
+  if (!Notifications) return null;
 
   try {
     const response = await Notifications.getLastNotificationResponseAsync();

@@ -117,3 +117,14 @@ Hệ thống hỗ trợ đăng nhập bằng **Số điện thoại** hoặc **T
     ```
 
   - Khi đó trên Android có thể trỏ thẳng vào `http://localhost:8080/QuanLyPhongTro/public/index.php?route=` cực kỳ ổn định.
+- **Lỗi `Cannot find native module 'ExpoTopicSubscriptionModule'`:**
+  - Android Expo Go không có native module mà phiên bản `expo-notifications` của dự án yêu cầu. Ứng dụng vẫn mở được trong Expo Go, nhưng tính năng thông báo sẽ không hoạt động.
+  - Để thử thông báo, cần tạo và cài development build trên thiết bị Android (máy cần Android SDK và ADB):
+
+    ```powershell
+    cd C:\wamp64\www\QuanLyPhongTro\QuanLyPhongTroMobile
+    npx expo run:android
+    npx expo start --dev-client
+    ```
+
+  - Push notification từ xa trên Android cũng cần development build; Expo Go không hỗ trợ tính năng này.

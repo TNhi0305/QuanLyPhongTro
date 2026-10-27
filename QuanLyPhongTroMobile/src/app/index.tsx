@@ -21,11 +21,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Notifications from 'expo-notifications';
 import {
   registerForPushNotificationsAsync,
   scheduleLocalReminder,
   checkInitialNotification,
+  subscribeToNotificationEvents,
+  requiresNotificationDevelopmentBuild,
   NotificationPayload
 } from '../services/notificationService';
 import {
@@ -149,6 +150,9 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!token) return;
 
+    let effectIsActive = true;
+    let removeNotificationListeners = () => {};
+
     // A. Kết nối Socket.IO
     const realtimeUrl = getRealtimeUrlFromApiBase(apiBase);
     const socket = connectSocket(realtimeUrl, token);
@@ -204,26 +208,39 @@ export default function HomeScreen() {
 
     // B. Đăng ký Expo Push Token
     (async () => {
-      const pToken = await registerForPushNotificationsAsync();
-      if (pToken) {
-        setPushToken(pToken);
-        api('push-token', 'POST', { token: pToken }).catch(() => {});
+      try {
+        const pToken = await registerForPushNotificationsAsync();
+        if (pToken) {
+          setPushToken(pToken);
+          api('push-token', 'POST', { token: pToken }).catch(() => {});
+        }
+      } catch (error) {
+        console.warn('[Push] Unable to register for notifications:', error);
       }
     })();
 
     // C. Notification Listeners (Foreground & Taps)
-    const notifReceivedSub = Notifications.addNotificationReceivedListener((notification) => {
-      console.log('[Push Received in Foreground]', notification);
-      const title = notification.request.content.title;
-      const body = notification.request.content.body;
-      setRealtimeNotice(`📬 ${title}: ${body}`);
-      setTimeout(() => setRealtimeNotice(null), 7000);
-    });
-
-    const notifResponseSub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const payload = response.notification.request.content.data as NotificationPayload;
-      console.log('[Push Tapped]', payload);
-      handleNotificationNavigation(payload);
+    subscribeToNotificationEvents(
+      (notification) => {
+        console.log('[Push Received in Foreground]', notification);
+        const title = notification.request.content.title;
+        const body = notification.request.content.body;
+        setRealtimeNotice(`📬 ${title}: ${body}`);
+        setTimeout(() => setRealtimeNotice(null), 7000);
+      },
+      (response) => {
+        const payload = response.notification.request.content.data as NotificationPayload;
+        console.log('[Push Tapped]', payload);
+        handleNotificationNavigation(payload);
+      }
+    ).then((removeListeners) => {
+      if (effectIsActive) {
+        removeNotificationListeners = removeListeners;
+      } else {
+        removeListeners();
+      }
+    }).catch((error) => {
+      console.warn('[Push] Unable to attach notification listeners:', error);
     });
 
     // D. Kiểm tra cold start notification
@@ -231,13 +248,15 @@ export default function HomeScreen() {
       if (payload) {
         handleNotificationNavigation(payload);
       }
+    }).catch((error) => {
+      console.warn('[Push] Unable to check the initial notification:', error);
     });
 
     return () => {
+      effectIsActive = false;
       socket.off('incident:created');
       socket.off('incident:status:changed');
-      notifReceivedSub.remove();
-      notifResponseSub.remove();
+      removeNotificationListeners();
     };
   }, [token, apiBase]);
 
@@ -551,7 +570,9 @@ export default function HomeScreen() {
     } else {
       Alert.alert(
         'Không thể kích hoạt thông báo',
-        'Vui lòng cấp quyền Thông báo cho ứng dụng Expo Go trong phần Cài đặt của thiết bị.'
+        requiresNotificationDevelopmentBuild()
+          ? 'Android Expo Go không hỗ trợ module thông báo đang dùng. Hãy chạy ứng dụng bằng development build để thử thông báo.'
+          : 'Vui lòng kiểm tra quyền thông báo trong phần Cài đặt của thiết bị.'
       );
     }
   };
@@ -1316,7 +1337,9 @@ export default function HomeScreen() {
               <View style={styles.settingRow}>
                 <Text style={styles.settingLabel}>Expo Push Token:</Text>
                 <Text style={[styles.settingVal, { fontSize: 11 }]} numberOfLines={1}>
-                  {pushToken || 'Chưa đăng ký token'}
+                  {requiresNotificationDevelopmentBuild()
+                    ? 'Cần development build trên Android'
+                    : pushToken || 'Chưa đăng ký token'}
                 </Text>
               </View>
 
